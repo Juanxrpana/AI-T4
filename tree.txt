@@ -1,0 +1,15 @@
+componente_ia/
+├── main.py              # FastAPI + endpoint
+├── guia.md              # (el que ya tienes)
+├── ai/
+│   ├── base.py          # clase base
+│   ├── gemini.py        # implementación
+│   └── schemas.py       # Pydantic models de respuesta
+├── tools/
+│   ├── php_client.py    # cliente HTTP hacia PHP
+│   └── clinica.py       # tools que Gemini puede invocar
+├── config/
+│   └── modulos.py       # diccionario de rutas del frontend
+├── .env.example
+├── .gitignore
+└── requirements.txt
