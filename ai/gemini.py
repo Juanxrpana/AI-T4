@@ -7,6 +7,8 @@ Optimizaciones de tokens aplicadas:
 """
 
 from pathlib import Path
+import logging
+
 from google import genai
 from google.genai import types
 
@@ -15,6 +17,8 @@ from ai.schemas import RespuestaOrientacion
 from config import settings, RUTAS_FRONTEND, ruta_cita_con_especialidad
 from tools import TOOLS
 import tools.php_client as php_client
+
+logger = logging.getLogger("asistente.gemini")
 
 
 class ProveedorGemini(ProveedorIA):
@@ -47,7 +51,11 @@ class ProveedorGemini(ProveedorIA):
             f"{lista}\n\n"
             f"## Directorio de doctores\n"
             f"Para consultar qué doctores hay en una especialidad, "
-            f"usa la herramienta `listar_doctores(especialidad)`."
+            f"usa la herramienta `listar_doctores(especialidad)`.\n\n"
+            f"## Datos del usuario logueado\n"
+            f"Si la persona pide su historial, síntomas, citas u hospitalizaciones, "
+            f"usa la herramienta `mis_datos()` (sin argumentos) y responde con "
+            f"`tipo_respuesta: \"datos\"` usando lo que devuelva."
         )
 
     def _config(self) -> types.GenerateContentConfig:
@@ -93,6 +101,14 @@ class ProveedorGemini(ProveedorIA):
         consulta: str,
         historial: list[dict] | None = None,
     ) -> dict:
+        # Reintento perezoso: si el arranque no pudo cargar el catálogo
+        # (PHP estaba caído), se vuelve a intentar antes de construir el prompt.
+        if not php_client.get_catalogo_cache_sincrono():
+            try:
+                await php_client.get_catalogo_especialidades()
+            except Exception:
+                logger.warning("No se pudo refrescar el catálogo de especialidades")
+
         chat = self.client.aio.chats.create(
             model=self.modelo,
             config=self._config(),
@@ -114,9 +130,9 @@ class ProveedorGemini(ProveedorIA):
         while response.function_calls and iteraciones < self.max_iteraciones:
             partes = []
             for fc in response.function_calls:
-                print(f"🔧 tool: {fc.name}({dict(fc.args) if fc.args else {}})")
+                logger.info("tool: %s(%s)", fc.name, dict(fc.args) if fc.args else {})
                 resultado = await self._ejecutar_tool(fc)
-                print(f"   → {resultado}")
+                logger.debug("tool %s -> %s", fc.name, resultado)
                 partes.append(
                     types.Part.from_function_response(
                         name=fc.name, response={"result": resultado}
@@ -129,15 +145,17 @@ class ProveedorGemini(ProveedorIA):
         try:
             respuesta = RespuestaOrientacion.model_validate_json(texto)
         except Exception:
+            # El texto crudo queda en el log del servidor, nunca en la respuesta.
+            logger.warning("Respuesta de Gemini no parseable: %.200s", texto)
             respuesta = RespuestaOrientacion(
                 tipo_respuesta="derivar",
                 mensaje="No pude generar una orientación clara. Consulte el caso con un médico.",
-                observacion=f"Respuesta cruda: {texto[:200]}",
+                observacion="",
             )
 
         # === Validación defensiva ===
         # En emergencia y catalogo, la especialidad siempre va vacía.
-        if respuesta.tipo_respuesta in ("emergencia", "catalogo"):
+        if respuesta.tipo_respuesta in ("emergencia", "catalogo", "datos"):
             respuesta.especialidad_sugerida = None
 
         # La especialidad sugerida debe existir en el catálogo real.

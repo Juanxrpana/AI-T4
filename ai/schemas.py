@@ -12,7 +12,7 @@ class RespuestaOrientacion(BaseModel):
     """Salida estructurada del asistente. Coincide con guia.md sección 7."""
 
     tipo_respuesta: Literal[
-        "emergencia", "orientacion", "catalogo", "aclaracion", "derivar"
+        "emergencia", "orientacion", "catalogo", "aclaracion", "derivar", "datos"
     ]
     mensaje: str = Field(..., description="Texto breve para la secretaria.")
     especialidad_sugerida: str | None = None

@@ -1,7 +1,9 @@
 """Herramientas de solo lectura que Gemini puede invocar.
 
-El catálogo de especialidades ya no es una tool: se inyecta en el
-system prompt al arrancar. Solo queda listar_doctores.
+- `listar_doctores`: doctores de una especialidad.
+- `mis_datos`: datos clínicos del usuario logueado (historial, síntomas, citas
+  y hospitalizaciones). No recibe argumentos: el usuario lo fija el backend a
+  partir de los headers X-Usuario-*, así Gemini nunca elige a quién leer.
 """
 
 import tools.php_client as php_client
@@ -39,5 +41,23 @@ async def listar_doctores(especialidad: str) -> list[dict]:
     ]
 
 
-# Solo queda una tool: el catálogo va inyectado en el prompt
-TOOLS = [listar_doctores]
+async def mis_datos() -> dict:
+    """Datos clínicos del usuario logueado (el que consulta).
+
+    Usa esta herramienta cuando la persona pida "mi historial", "mis síntomas",
+    "mis citas" o "mis hospitalizaciones". No recibe parámetros: el usuario se
+    toma de la sesión de la petición actual.
+
+    Returns:
+        dict con `acceso` ("permitido"/"denegado"), `paciente` y las listas
+        `historial`, `citas` y `hospitalizaciones`.
+    """
+    usuario = php_client.usuario_actual.get()
+    if not usuario:
+        return {"ok": False, "error": "No hay usuario identificado en la consulta."}
+
+    return await php_client.get_mis_datos(int(usuario))
+
+
+# Catálogo inyectado en el prompt; estas son las tools que Gemini puede invocar.
+TOOLS = [listar_doctores, mis_datos]

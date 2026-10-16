@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     PHP_BASE_URL: str = "http://localhost/Sistema-del--CEM--JEHOVA-RAFA"
     API_KEY_COMPARTIDA: str
     MODELO_GEMINI: str
+    # Lista separada por comas. Vacío = sin CORS (el navegador no llama directo).
+    CORS_ORIGINS: str = ""
 
 
 settings = Settings()

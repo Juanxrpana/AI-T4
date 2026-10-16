@@ -5,12 +5,15 @@ Cuando cambian rutas en el sistema PHP, se editan aquí y listo.
 
 from urllib.parse import quote
 
+# Prefijo del sistema PHP (mismo que usa el resto del frontend).
+BASE = "/Sistema-del--CEM--JEHOVA-RAFA"
+
 RUTAS_FRONTEND = {
-    "citas_nueva":     "/Citas/citasHoy",
-    "citas_lista":     "/Citas/citas",
-    "clientes_lista":  "/Clientes/Clientes",
-    "pacientes_lista": "/Pacientes/getPacientes",
-    "doctores_lista":  "/Doctores/doctores",
+    "citas_nueva":     f"{BASE}/Citas/citasHoy",
+    "citas_lista":     f"{BASE}/Citas/citas",
+    "clientes_lista":  f"{BASE}/Clientes/Clientes",
+    "pacientes_lista": f"{BASE}/Pacientes/getPacientes",
+    "doctores_lista":  f"{BASE}/Doctores/doctores",
 }
 
 
