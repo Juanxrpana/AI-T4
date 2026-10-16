@@ -22,8 +22,21 @@ app.add_middleware(
 
 proveedor = ProveedorGemini()
 
-# Sesiones en memoria (temporal — ver guia.md sección 8)
+# Sesiones en memoria (temporal)
 SESIONES: dict[str, dict] = {}
+
+# Cuántos turnos previos se reenvían a Gemini por consulta.
+# 4 mensajes = 2 turnos (user + model, user + model).
+MAX_HISTORIAL = 4
+
+
+@app.on_event("startup")
+async def startup():
+    """Carga el catálogo de especialidades al arrancar.
+
+    Se hace una sola vez. Después el caché se refresca solo cada 10 min.
+    """
+    await proveedor.precargar_catalogo()
 
 
 class ConsultaIn(BaseModel):
@@ -51,10 +64,13 @@ async def orientar(body: ConsultaIn, x_api_key: str | None = Header(default=None
         {"historial": [], "creada_en": datetime.utcnow().isoformat()},
     )
 
+    # Recortar historial a los últimos MAX_HISTORIAL mensajes
+    historial_recortado = sesion["historial"][-MAX_HISTORIAL:] or None
+
     try:
         respuesta = await proveedor.orientar(
             consulta=body.consulta,
-            historial=sesion["historial"] or None,
+            historial=historial_recortado,
         )
     except Exception as e:
         return {

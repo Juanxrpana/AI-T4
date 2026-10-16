@@ -1,43 +1,30 @@
 """Herramientas de solo lectura que Gemini puede invocar.
 
-Cada función lleva un docstring que Gemini usa como descripción de la
-herramienta. Los type hints importan: el SDK los usa para armar el schema.
+El catálogo de especialidades ya no es una tool: se inyecta en el
+system prompt al arrancar. Solo queda listar_doctores.
 """
 
 import tools.php_client as php_client
-
-
-async def listar_especialidades() -> list[str]:
-    """Devuelve la lista de especialidades médicas disponibles en el centro.
-
-    Úsala SIEMPRE antes de sugerir una especialidad, para verificar
-    que exista en el catálogo real del centro.
-
-    Returns:
-        Lista de nombres de especialidades activas.
-    """
-    filas = await php_client.get_especialidades()
-    return sorted(
-        {f.get("nombre", "").strip() for f in filas if f.get("nombre")}
-    )
 
 
 async def listar_doctores(especialidad: str) -> list[dict]:
     """Lista los doctores activos de una especialidad.
 
     Args:
-        especialidad: Nombre exacto de la especialidad (debe existir en el catálogo).
+        especialidad: Nombre exacto de la especialidad. Debe existir
+            en el catálogo que aparece en las instrucciones del sistema.
 
     Returns:
-        Lista de doctores con su id y nombre completo.
+        Lista de doctores con su id y nombre completo. Vacía si la
+        especialidad no existe o no tiene doctores asignados.
     """
-    filas = await php_client.get_especialidades()
+    catalogo = await php_client.get_catalogo_especialidades()
     match = next(
-        (f for f in filas
+        (f for f in catalogo
          if f.get("nombre", "").strip().lower() == especialidad.strip().lower()),
         None,
     )
-    if not match or not match.get("id_categoria"):
+    if not match:
         return []
 
     doctores = await php_client.get_doctores_por_id_categoria(match["id_categoria"])
@@ -52,5 +39,5 @@ async def listar_doctores(especialidad: str) -> list[dict]:
     ]
 
 
-# Lista que se le pasa al SDK de Gemini
-TOOLS = [listar_especialidades, listar_doctores]
+# Solo queda una tool: el catálogo va inyectado en el prompt
+TOOLS = [listar_doctores]
