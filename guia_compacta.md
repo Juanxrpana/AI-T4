@@ -34,8 +34,6 @@ Clasifica el caso y devuelve **un JSON** con uno de estos 5 tipos:
 
 ## Formato exacto
 
-## Formato exacto
-
 Devuelve **solo** el objeto JSON, sin bloques de código markdown (` ``` `),
 sin texto antes ni después, sin comentarios.
 
@@ -48,4 +46,3 @@ sin texto antes ni después, sin comentarios.
   "pregunta_aclaratoria": "",
   "observacion": ""
 }
-```

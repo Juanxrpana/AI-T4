@@ -65,6 +65,7 @@ class ProveedorGemini(ProveedorIA):
     def _construir_accion(self, r: RespuestaOrientacion) -> dict:
         """Añade el botón de acción. NO lo decide Gemini, lo decide FastAPI."""
         if r.tipo_respuesta == "orientacion" and r.especialidad_sugerida:
+            nombre = r.especialidad_sugerida.title()
             return {
                 "etiqueta": f"Agendar cita con {r.especialidad_sugerida}",
                 "ruta": ruta_cita_con_especialidad(r.especialidad_sugerida),
@@ -134,11 +135,29 @@ class ProveedorGemini(ProveedorIA):
                 observacion=f"Respuesta cruda: {texto[:200]}",
             )
 
+        # === Validación defensiva ===
+        # En emergencia y catalogo, la especialidad siempre va vacía.
+        if respuesta.tipo_respuesta in ("emergencia", "catalogo"):
+            respuesta.especialidad_sugerida = None
+
+        # La especialidad sugerida debe existir en el catálogo real.
+        # Si no existe, se degrada a catalogo con las opciones reales.
+        if respuesta.especialidad_sugerida:
+            catalogo = php_client.get_catalogo_cache_sincrono()
+            nombres = {c["nombre"].strip().lower() for c in catalogo}
+            if respuesta.especialidad_sugerida.strip().lower() not in nombres:
+                respuesta.tipo_respuesta = "catalogo"
+                respuesta.especialidades_disponibles = [c["nombre"] for c in catalogo]
+                respuesta.especialidad_sugerida = None
+                respuesta.observacion = (
+                    "La especialidad sugerida no está disponible en el centro. "
+                    "Se muestran las opciones actuales."
+                )
+
         return {
             **respuesta.model_dump(),
             "accion_sugerida": self._construir_accion(respuesta),
         }
-
     @staticmethod
     def _limpiar_json(texto: str) -> str:
         """Quita bloques markdown ```json ... ``` si Gemini los mete."""
