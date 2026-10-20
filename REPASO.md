@@ -108,7 +108,7 @@ Headers opcionales (los pone PHP): `X-Usuario-Id`, `X-Usuario-Rol`, `X-Usuario-N
 ```json
 {
   "session_id": "uuid",
-  "tipo_respuesta": "emergencia | orientacion | catalogo | aclaracion | derivar | datos",
+  "tipo_respuesta": "emergencia | orientacion | catalogo | aclaracion | derivar | datos | navegacion",
   "mensaje": "...",
   "especialidad_sugerida": "Cardiología o null",
   "especialidades_disponibles": ["..."],
@@ -175,9 +175,16 @@ Requiere CSRF y sesión activa.
 ## 7. Reglas de la guía (`guia_compacta.md`)
 
 - Gemini **solo** sugiere especialidades del catálogo.
-- En `emergencia` y `catalogo`: `especialidad_sugerida = null`.
-- `mensaje` neutro y administrativo, **prohibido** explicar por qué un síntoma va a una especialidad.
-- **Prohibido** lenguaje diagnóstico ("sugiere", "compatible con", "podría tratarse de").
+- En `emergencia`, `catalogo`, `datos` y `navegacion`: `especialidad_sugerida = null`.
+- En `navegacion`: `modulo_sugerido` (pacientes, clientes, citas, doctores,
+  especialidades, hospitalización, insumos, reportes…) y FastAPI arma el botón
+  con `RUTAS_FRONTEND`. Si piden ver una lista, **no se niega por privacidad**:
+  solo ofrece el botón, sin volcar datos de pacientes.
+- `mensaje` breve y útil: **puede** incluir una explicación general de posibles
+  causas, dejando claro que es orientativo.
+- **Prohibido** el diagnóstico definitivo, las recetas y las certezas
+  ("tiene", "es", "compatible con"). Sí se permite "puede estar relacionado con…".
+- No responder todo con "agende una cita": primero explicar, luego recomendar.
 - Devuelve **solo** JSON, sin bloques markdown.
 
 ---
@@ -191,6 +198,9 @@ Requiere CSRF y sesión activa.
   síntomas, citas y hospitalizaciones del paciente vinculado por cédula. Solo
   personal del centro (doctores, secretaría, administradores); usuarios normales
   reciben `acceso: "denegado"`. Nuevo tipo de respuesta `datos`.
+- **Navegación a módulos**: si piden ver listas (pacientes, citas, doctores,
+  insumos, reportes…), responde con tipo `navegacion` y botón al módulo correcto
+  (`RUTAS_FRONTEND`), sin negarse por privacidad ni volcar datos.
 - Validación de especialidades contra catálogo real.
 - Emergencias clasificadas y sin botón.
 - Filtro `hash_equals`/`compare_digest` para la API key (fail-closed en ambos lados).
@@ -198,12 +208,21 @@ Requiere CSRF y sesión activa.
   `chatModal.css`, `chatModal.js`) presentes en todas las páginas vía
   `head.php`/`footer.php`, y proxy `POST /Chat/preguntar` en `ControllerChat.php`
   con sesión + CSRF + auditoría en bitácora.
+- **Chat persistente**: el historial se guarda en `localStorage`. Al recargar la
+  página (p. ej. al cambiar de módulo desde un botón), al reabrir el asistente
+  aparecen **“Continuar chat”** y **“Nuevo chat”** en vez de borrarse.
 - El proxy envía `X-Usuario-Id/Rol/Nombre`; el componente los registra en su log.
 - **Tests automáticos** de `/orientar`, manejo de errores, `listar_doctores` y
   `mis_datos` (`tests/`, con `pytest`). 13 tests en verde.
 - Hardening: `lifespan` en vez de `on_event`, `logging` en vez de `print`,
   respuesta de error sin filtrar detalles internos, catálogo con reintento
   perezoso, CORS desactivado salvo que `CORS_ORIGINS` traiga orígenes.
+- **Fallback entre modelos**: si `MODELO_GEMINI` responde 503/429 o tarda más de
+  `IA_TIMEOUT_MODELO` segundos, se prueba `MODELOS_FALLBACK` en orden. Probado en
+  vivo: `gemini-3.8-flash` (503) → `gemini-3.5-flash` responde.
+- **Historial multi-turno corregido**: el historial se pasa como `history=` al
+  crear el chat (antes se enviaba una lista de `Content` a `send_message`, que
+  lanzaba `ValueError`).
 
 ### ⚠️ Pendiente de verificar
 - Prueba end-to-end en el navegador: botón flotante → PHP → FastAPI → Gemini.
@@ -222,16 +241,15 @@ Requiere CSRF y sesión activa.
 
 ### Arrancar FastAPI
 ```bash
-cd componente_ia
-venv\Scripts\activate
+cd C:\Users\Edouard\Documents\universidad\proyecto\AI-T4
 uvicorn main:app --reload --port 8000
 ```
 Docs: http://127.0.0.1:8000/docs
 
 ### Correr los tests
 ```bash
-cd componente_ia
-.venv\Scripts\python.exe -m pytest -q
+cd C:\Users\Edouard\Documents\universidad\proyecto\AI-T4
+python -m pytest -q
 ```
 
 ### Probar directo con curl
@@ -261,6 +279,9 @@ GEMINI_API_KEY=tu_api_key_de_google_ai_studio
 PHP_BASE_URL=http://localhost/Sistema-del--CEM--JEHOVA-RAFA
 API_KEY_COMPARTIDA=cambia_esto_por_algo_largo_y_aleatorio
 MODELO_GEMINI=gemini-3.8-flash
+# Si el principal da 503/429 o tarda más de IA_TIMEOUT_MODELO, se prueba el siguiente.
+MODELOS_FALLBACK=gemini-3.5-flash,gemini-2.5-flash,gemini-flash-latest
+IA_TIMEOUT_MODELO=12
 ```
 
 **Importante:** `API_KEY_IA` (PHP) y `API_KEY_COMPARTIDA` (FastAPI) **deben ser el mismo valor**.
