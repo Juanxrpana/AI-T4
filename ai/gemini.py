@@ -38,7 +38,7 @@ class ProveedorGemini(ProveedorIA):
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.modelo = settings.MODELO_GEMINI
         self.modelos = self._lista_modelos()
-        self.guia = Path("guia_compacta.md").read_text(encoding="utf-8")
+        self.guia = Path("guia.md").read_text(encoding="utf-8")
         self.max_iteraciones = 4  # antes 6, con menos tools 4 basta
 
     def _lista_modelos(self) -> list[str]:

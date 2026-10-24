@@ -34,7 +34,7 @@ MariaDB
 - FastAPI **no** accede a la base de datos directamente. Pide datos por HTTP a PHP.
 - El componente IA es **solo lectura**: nunca modifica nada.
 - La especialidad sugerida **debe** existir en el catálogo real del centro.
-- Prompt separado del código (en `guia_compacta.md`).
+- Prompt separado del código (en `guia.md`).
 
 ---
 
@@ -68,8 +68,7 @@ C:\Users\Edouard\Documents\universidad\proyecto\AI-T4\
 ```
 componente_ia/
 ├── main.py
-├── guia.md              # guía larga original (referencia)
-├── guia_compacta.md     # guía activa que se envía a Gemini
+├── guia.md              # guía activa que se envía a Gemini
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -172,7 +171,7 @@ Requiere CSRF y sesión activa.
 
 ---
 
-## 7. Reglas de la guía (`guia_compacta.md`)
+## 7. Reglas de la guía (`guia.md`)
 
 - Gemini **solo** sugiere especialidades del catálogo.
 - En `emergencia`, `catalogo`, `datos` y `navegacion`: `especialidad_sugerida = null`.
@@ -305,8 +304,10 @@ IA_TIMEOUT_MODELO=12
 **¿Por qué el componente no lee MariaDB?**
 Porque PHP ya lo hace. Duplicar la lógica de negocio en Python es mala idea.
 
-**¿Por qué hay dos guías (`guia.md` y `guia_compacta.md`)?**
-`guia.md` es la versión larga original, útil como referencia. `guia_compacta.md` es la que se envía a Gemini para ahorrar tokens. **Solo se edita la compacta.**
+**¿Por qué hay una sola guía (`guia.md`)?**
+Antes había `guia.md` (larga) y `guia_compacta.md` (activa). Se unificaron en un
+único `guia.md` compacto para no duplicar reglas ni tokens. Es el archivo que se
+envía a Gemini.
 
 **¿Por qué no usar el SDK con `response_schema`?**
 Lo probamos; hay conflictos con `automatic_function_calling`. La solución actual (validar JSON manualmente + limpiar markdown) es más frágil pero funciona con la versión actual del SDK.
@@ -342,7 +343,7 @@ La sesión vive en RAM del servidor. Al volver con el mismo `session_id` (guarda
 ## 14. Cosas que NO hacer
 
 - ❌ No exponer la `GEMINI_API_KEY` al frontend.
-- ❌ No meter lógica de negocio en `guia_compacta.md` (es solo prompt).
+- ❌ No meter lógica de negocio en `guia.md` (es solo prompt).
 - ❌ No reescribir el sistema PHP para "modernizarlo" — funciona, no se toca.
 - ❌ No permitir que el componente escriba en la BD.
 - ❌ No cambiar `personal_has_serviciomedico` ni `categoria_servicio` sin avisar al equipo.
@@ -359,6 +360,86 @@ La sesión vive en RAM del servidor. Al volver con el mismo `session_id` (guarda
 
 ---
 
-**Última actualización:** 16 de octubre de 2026.
+## 16. Nueva funcionalidad en diseño: MIDI (mini consulta + memoria)
+
+> Estado: **DISEÑO ACORDADO, SIN IMPLEMENTAR**. No escribir código hasta que el
+> humano lo confirme.
+
+**Nombre:** el asistente se llama **MIDI** (no es acrónimo ni abreviatura).
+Significado de trabajo propuesto: **Módulo Inteligente de Derivación e
+Información** (se puede cambiar sin tocar código).
+
+**Objetivo:** que MIDI no solo redirija. Debe indagar un poco (consulta breve),
+dar una interpretación orientativa con lenguaje prudente, considerar el
+historial del paciente y terminar recomendando al doctor.
+
+### 16.1 Mini consulta
+- Preguntas: **entre 3 y 5** para casos no urgentes (mínimo 3, máximo 5). La
+  **emergencia** no pregunta: alerta de inmediato.
+- Lenguaje: "puede estar relacionado con…", "habría que descartar…", "suelen
+  indicarse pruebas como…". **Prohibido**: "tiene", "es", "compatible con",
+  "le indico X", medicamentos ni dosis.
+- Formato: listas estructuradas `posibles_asociaciones`, `a_descartar`,
+  `pruebas_sugeridas` + `recomendacion`. **Sin** cuidados generales ni fármacos.
+- Botón final: **Citas con la especialidad preseleccionada**
+  (`/Citas/citasHoy?especialidad=…`). El usuario elige el doctor.
+- Preguntas típicas: desde cuándo, dónde/localización, qué lo desencadena o
+  alivia, síntomas asociados (fiebre, dolor, picazón), si ingirió/usó algo
+  nuevo, episodios anteriores.
+
+### 16.2 Historial del paciente
+- Se identifica pidiendo la **cédula** en la consulta, validando que el rol del
+  usuario tenga acceso al módulo **Pacientes**.
+- Datos a considerar: **patologías**, **controles/consultas** (diagnóstico,
+  historial clínico, medicamentos recetados y resultados) y **citas**.
+- Solo los **últimos 6 meses** de controles/consultas para no arrastrar años de
+  historial.
+- La memoria evita volver a consultar al mismo paciente en cada mensaje.
+
+### 16.3 Memoria (propia, no mem0)
+- Decisión: **memoria propia con SQLite + embeddings** (sin mem0), para no
+  depender de servicios externos ni Docker en Windows.
+- Alcance: **por usuario** (staff), pero **etiquetada por paciente** para no
+  mezclar historiales.
+- Guarda **resumen por paciente + hechos de la conversación** (preferencias y
+  contexto), vectorizados con embeddings de **Gemini** (misma API key).
+- Se borra **manualmente** con un botón **“Borrar memoria”** en el modal.
+
+### 16.4 Contrato propuesto (confirmar al implementar)
+Extender `RespuestaOrientacion` con campos opcionales:
+```
+posibles_asociaciones: list[str]   # "puede estar relacionado con…"
+a_descartar: list[str]             # "habría que descartar…"
+pruebas_sugeridas: list[str]       # "suelen indicarse pruebas como…"
+recomendacion: str                 # acudir/agendar con la especialidad
+```
+Se mantiene `especialidad_sugerida` (del catálogo) y `accion_sugerida` lo arma
+FastAPI. `aclaracion` sigue usando `pregunta_aclaratoria`.
+
+### 16.5 Pendiente al implementar
+- Subir `MAX_HISTORIAL` (hoy 4 = 2 turnos) a ~12-14 para sostener 3-5 preguntas
+  más sus respuestas.
+- **Forzar el conteo en código, no solo en el prompt**: contar las respuestas
+  `aclaracion` de la sesión; si van menos de 3, obligar a preguntar; si llegan a
+  5, obligar a concluir.
+- Endpoint PHP read-only para historial por cédula, con validación de permiso
+  sobre el módulo Pacientes.
+- Actualizar `guia.md` (nombre MIDI, criterios, lenguaje, uso del
+  historial y la memoria).
+- Renderizar las listas nuevas en `chatModal.js` + `chatModal.css` y añadir el
+  botón **“Borrar memoria”**.
+- Tests: 3-5 preguntas, lenguaje prohibido ausente, acción final a Citas,
+  historial por cédula, memoria por usuario/paciente.
+- La **emergencia** mantiene prioridad: no pregunta.
+
+### 16.6 Resueltas (24-oct-2026)
+- Ventana de historial: **últimos 6 meses**.
+- Memoria: **resumen por paciente + hechos de conversación**.
+- Borrado: **manual** con botón “Borrar memoria”.
+- Embedder: **Gemini** (`text-embedding`, misma API key).
+
+---
+
+**Última actualización:** 24 de octubre de 2026.
 
 Si otra IA lee esto: empieza por el punto 8 (estado actual), luego el 4 (contratos), y pregunta al humano **antes** de cambiar cualquier decisión del punto 6.
