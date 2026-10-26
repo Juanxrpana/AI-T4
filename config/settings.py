@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     SQLITE_PATH: str = "storage/midi.db"
     # Ventana de controles del paciente que se envía a MIDI.
     HISTORIAL_MESES: int = 6
+    # Archivo donde se guardan los ejemplos/palabras que MIDI aprende.
+    APRENDIZAJE_PATH: str = "knowledge/aprendido.json"
+    # Modelo de embeddings para la memoria vectorizada.
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
 
 
 settings = Settings()

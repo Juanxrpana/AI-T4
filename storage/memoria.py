@@ -49,7 +49,7 @@ async def obtener(id_usuario: str, id_paciente: str | int | None) -> dict | None
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT id_usuario, id_paciente, resumen, datos_json, actualizada_en "
+            "SELECT id_usuario, id_paciente, resumen, datos_json, embedding, actualizada_en "
             "FROM memorias WHERE id_usuario = ? AND id_paciente = ?",
             (str(id_usuario), clave_paciente),
         ) as cur:
@@ -63,13 +63,76 @@ async def obtener(id_usuario: str, id_paciente: str | int | None) -> dict | None
     except (TypeError, ValueError):
         datos = {}
 
+    try:
+        embedding = json.loads(fila["embedding"]) if fila["embedding"] else None
+    except (TypeError, ValueError):
+        embedding = None
+
     return {
         "id_usuario": fila["id_usuario"],
         "id_paciente": fila["id_paciente"],
         "resumen": fila["resumen"],
         "datos": datos,
+        "embedding": embedding,
         "actualizada_en": fila["actualizada_en"],
     }
+
+
+async def actualizar_embedding(
+    id_usuario: str, id_paciente: str | int | None, embedding: list[float] | None
+) -> None:
+    if not embedding:
+        return
+
+    clave_paciente = "" if id_paciente in (None, "") else str(id_paciente)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE memorias SET embedding = ? WHERE id_usuario = ? AND id_paciente = ?",
+            (json.dumps(embedding), str(id_usuario), clave_paciente),
+        )
+        await db.commit()
+
+
+def _coseno(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    producto = sum(x * y for x, y in zip(a, b))
+    norma_a = sum(x * x for x in a) ** 0.5
+    norma_b = sum(y * y for y in b) ** 0.5
+    if not norma_a or not norma_b:
+        return 0.0
+    return producto / (norma_a * norma_b)
+
+
+async def buscar_similares(id_usuario: str, vector: list[float], k: int = 5) -> list[dict]:
+    """Ranking por similitud coseno de las memorias del usuario."""
+    if not vector:
+        return []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id_paciente, resumen, embedding FROM memorias "
+            "WHERE id_usuario = ? AND embedding IS NOT NULL",
+            (str(id_usuario),),
+        ) as cur:
+            filas = await cur.fetchall()
+
+    resultados = []
+    for fila in filas:
+        try:
+            emb = json.loads(fila["embedding"])
+        except (TypeError, ValueError):
+            continue
+        resultados.append({
+            "id_paciente": fila["id_paciente"],
+            "resumen": fila["resumen"],
+            "score": round(_coseno(vector, emb), 4),
+        })
+
+    resultados.sort(key=lambda r: r["score"], reverse=True)
+    return resultados[: max(1, int(k))]
 
 
 async def borrar(id_usuario: str, id_paciente: str | int | None = None) -> None:

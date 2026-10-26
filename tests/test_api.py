@@ -53,7 +53,7 @@ def test_orientar_con_key_valida(monkeypatch):
     with _cliente(monkeypatch) as c:
         r = c.post(
             "/orientar",
-            json={"consulta": "manchas rojas en la piel"},
+            json={"consulta": "necesito información general sobre una cita"},
             headers={"X-API-Key": API_KEY, "X-Usuario-Nombre": "Ana"},
         )
         assert r.status_code == 200
@@ -201,6 +201,36 @@ def test_flujo_general_cierra_tras_5_preguntas(monkeypatch):
         assert d["accion_sugerida"]["visible"] is True
 
 
+def test_detecta_dominio_piel():
+    import ai.cuestionario as cuestionario
+
+    assert cuestionario.detectar_dominio("Manchas rojas en la piel") == "lesion_piel"
+
+
+def test_no_cambia_a_dominio_a_mitad_del_flujo_general(monkeypatch):
+    with _cliente(monkeypatch, orientar=lambda consulta, historial=None: _respuesta_aclaracion()) as c:
+        headers = {"X-API-Key": API_KEY, "X-Usuario-Id": "u-mix"}
+
+        # Arranca como flujo general (sin dominio).
+        r = c.post(
+            "/orientar",
+            json={"consulta": "algo raro", "session_id": "mix-1"},
+            headers=headers,
+        )
+        assert r.json()["tipo_respuesta"] == "aclaracion"
+
+        # Contiene una palabra del dominio, pero ya hay preguntas generales:
+        # debe seguir en el flujo general, no reiniciar el cuestionario.
+        r = c.post(
+            "/orientar",
+            json={"consulta": "y tengo piel roja", "session_id": "mix-1"},
+            headers=headers,
+        )
+        d = r.json()
+        assert d["pregunta_aclaratoria"] == "¿Desde cuándo?"
+        assert "cédula" not in (d.get("pregunta_aclaratoria") or "").lower()
+
+
 def test_orientar_sin_key(monkeypatch):
     with _cliente(monkeypatch) as c:
         r = c.post("/orientar", json={"consulta": "dolor de pecho"})
@@ -298,3 +328,18 @@ def test_auditoria_registra_y_lista(monkeypatch):
         filas = r.json()
         assert isinstance(filas, list)
         assert any(f["session_id"] == "aud-1" for f in filas)
+
+
+def test_conocimiento_aprende_y_lista(monkeypatch):
+    with _cliente(monkeypatch) as c:
+        r = c.post(
+            "/conocimiento",
+            json={"dominio": "lesion_piel", "palabras_clave": ["puntitos rojos"]},
+            headers={"X-API-Key": API_KEY},
+        )
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+        r = c.get("/conocimiento", headers={"X-API-Key": API_KEY})
+        assert r.status_code == 200
+        assert "lesion_piel" in r.json()

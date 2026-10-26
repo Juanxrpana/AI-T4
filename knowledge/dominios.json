@@ -55,7 +55,7 @@
   },
   "lesion_piel": {
     "nombre": "Lesión en la piel",
-    "palabras_clave": ["roja la piel", "piel roja", "enrojecimiento", "manchas en la piel", "sarpullido", "ronchas", "picazon", "picazón", "comezon", "comezón", "lesion en la piel", "lesión en la piel", "erupcion", "erupción"],
+    "palabras_clave": ["manchas", "manchas rojas", "manchas en la piel", "roja la piel", "piel roja", "enrojecimiento", "sarpullido", "ronchas", "picazon", "picazón", "comezon", "comezón", "lesion en la piel", "lesión en la piel", "erupcion", "erupción"],
     "especialidades": ["CONSULTA GENERAL"],
     "senal_alarma": ["dificultad para respirar", "hinchazon de labios", "hinchazón de labios", "hinchazon de cara", "hinchazón de cara", "ampollas", "fiebre alta", "dolor intenso"],
     "posibles_asociaciones": ["irritación por contacto", "reacción alérgica leve", "dermatitis"],

@@ -80,10 +80,12 @@ componente_ia/
 │   ├── __init__.py
 │   ├── base.py          # clase abstracta ProveedorIA
 │   ├── schemas.py       # Pydantic: RespuestaOrientacion, AccionSugerida
-│   ├── cuestionario.py  # motor del cuestionario (dominios + progreso)
+│   ├── cuestionario.py  # motor del cuestionario + aprendizaje
+│   ├── embeddings.py    # Gemini embeddings + coseno
 │   └── gemini.py        # ProveedorGemini
 ├── knowledge/
-│   └── dominios.json    # 4 dominios: torácico, fiebre, abdominal, piel
+│   ├── dominios.json    # 4 dominios: torácico, fiebre, abdominal, piel
+│   └── aprendido.json   # ejemplos/palabras que MIDI aprende en vivo
 ├── storage/
 │   ├── db.py            # SQLite (sesiones, mensajes, auditoría, memorias)
 │   ├── sesiones.py
@@ -161,6 +163,15 @@ POST   /Chat/borrarMemoria   →  proxy a FastAPI (DELETE /memoria)
 ```
 Requieren CSRF y sesión activa.
 
+### Endpoints internos nuevos de FastAPI
+```
+GET  /auditoria                 → auditoría append-only (API key)
+GET  /conocimiento              → lo aprendido por dominio
+POST /conocimiento              → añadir ejemplo/palabras a un dominio
+DELETE /memoria                 → borra la memoria del usuario
+GET  /memoria/similares?q=...   → memorias del usuario por similitud coseno
+```
+
 ---
 
 ## 6. Decisiones de diseño importantes (no cambiar sin razón)
@@ -222,7 +233,8 @@ Requieren CSRF y sesión activa.
   emergencia sin preguntar y orientación final con listas + botón a Citas.
 - **Anti-repetición**: el historial guarda también la pregunta del asistente; el
   flujo general (síntomas fuera de los dominios) hace una pregunta por mensaje y
-  cierra a las 5 aunque falte detalle.
+  cierra a las 5 aunque falte detalle. Si el flujo general ya empezó, **no se
+  cambia a un dominio a mitad de conversación** (evita reiniciar y repetir).
 - **Historial del paciente**: `apiBuscarPaciente`, `apiControlesPaciente` y
   `apiPatologiasPaciente` (por cédula, validando personal), más las tools
   `buscar_paciente` y `datos_clinicos_paciente`. Ventana: últimos 6 meses (si no
@@ -230,8 +242,14 @@ Requieren CSRF y sesión activa.
 - **Persistencia SQLite**: sesiones, mensajes, auditoría y memorias (`storage/`).
   Endpoints `GET /auditoria` y `DELETE /memoria`.
 - **Memoria por usuario/paciente**: resumen de antecedentes para no reconsultar
-  a PHP en cada mensaje. Se borra con el botón **«Borrar memoria»**
+  a PHP en cada mensaje. **Vectorizada** con `gemini-embedding-001` (3072 dims);
+  se guarda el embedding y se puede buscar por similitud coseno
+  (`GET /memoria/similares`). Se borra con el botón **«Borrar memoria»**
   (`/Chat/borrarMemoria`).
+- **Aprendizaje del conocimiento**: cada conversación de un dominio guarda la
+  frase real del usuario en `knowledge/aprendido.json`. Las variantes se
+  reconocen por similitud de tokens. También se pueden añadir ejemplos o
+  palabras clave con `POST /conocimiento` sin tocar código.
 - Validación de especialidades contra catálogo real.
 - Emergencias clasificadas y sin botón.
 - Filtro `hash_equals`/`compare_digest` para la API key (fail-closed en ambos lados).
@@ -320,6 +338,12 @@ IA_TIMEOUT_MODELO=8
 
 **Importante:** `API_KEY_IA` (PHP) y `API_KEY_COMPARTIDA` (FastAPI) **deben ser el mismo valor**.
 
+**Cuota de Gemini:** el plan Free Tier limita a **20 `generateContent` por día
+por modelo**. Al agotarse responde `429 RESOURCE_EXHAUSTED`. MIDI sigue
+funcionando para el cuestionario (determinista) y cierra con la orientación de
+respaldo; para respuestas generadas por IA hace falta una key con más cuota o
+esperar el reinicio diario.
+
 ---
 
 ## 11. Vocabulario del dominio
@@ -347,6 +371,12 @@ envía a Gemini.
 **¿Por qué no usar el SDK con `response_schema`?**
 Lo probamos; hay conflictos con `automatic_function_calling`. La solución actual (validar JSON manualmente + limpiar markdown) es más frágil pero funciona con la versión actual del SDK.
 
+**¿Qué es `aiosqlite` y por qué no `sqlite3`?**
+`sqlite3` viene con Python, pero es **síncrono**: usarlo dentro de un endpoint
+`async` bloquea el event loop. `aiosqlite` es solo un envoltorio async del mismo
+`sqlite3` (misma base, mismo archivo `.db`); ejecuta las operaciones en un hilo.
+No es otra base de datos ni otro motor.
+
 **¿Por qué la especialidad va con `.title()`?**
 El catálogo tiene `CONSULTA GENERAL` en mayúsculas, feo en un botón. `.title()` lo normaliza a `Consulta General`. Si el frontend PHP necesita el nombre exacto del catálogo, quitar esta normalización.
 
@@ -370,11 +400,13 @@ La sesión vive en RAM del servidor. Al volver con el mismo `session_id` (guarda
 - Integración PHP del modal + proxy `Chat/preguntar` (CSRF, sesión, auditoría).
 - Datos del usuario logueado vía `mis_datos()` + `ControllerApi::apiDatosUsuario` + `ModeloApi`.
 - **MIDI**: cuestionario guiado por 4 dominios (`knowledge/dominios.json` + `ai/cuestionario.py`).
+- **Aprendizaje**: `knowledge/aprendido.json` + `GET/POST /conocimiento` (ejemplos y palabras clave).
+- **Memoria vectorizada**: `gemini-embedding-001` + coseno + `GET /memoria/similares`.
 - **Historial por cédula**: `apiBuscarPaciente`, `apiControlesPaciente`, `apiPatologiasPaciente` + tools.
 - **SQLite**: sesiones, mensajes, auditoría y memoria (`storage/`); `GET /auditoria` y `DELETE /memoria`.
 - **Modal**: progreso, listas de orientación y botón «Borrar memoria».
 - Hardening del componente (lifespan, logging, key fail-closed, sin fugas).
-- Tests `pytest` (`tests/`, 22 en verde).
+- Tests `pytest` (`tests/`, 32 en verde).
 - Corregida la regla de `.htaccess` que bloqueaba `src/controladores` en vez de `src/controllers`.
 
 ---
@@ -440,8 +472,20 @@ historial del paciente y terminar recomendando al doctor.
 - Alcance: **por usuario** (staff), pero **etiquetada por paciente** para no
   mezclar historiales.
 - Guarda **resumen por paciente + hechos de la conversación** (preferencias y
-  contexto), vectorizados con embeddings de **Gemini** (misma API key).
+  contexto), vectorizados con `gemini-embedding-001` (3072 dims).
+- Similitud coseno en Python (`ai/embeddings.py`, `storage/memoria.py`);
+  consultable con `GET /memoria/similares`. El cálculo del embedding se hace en
+  segundo plano para no retrasar la respuesta.
 - Se borra **manualmente** con un botón **“Borrar memoria”** en el modal.
+
+### 16.3.1 Aprendizaje del conocimiento
+- `knowledge/dominios.json` es la base **curada** (no se modifica en runtime).
+- Cada vez que se inicia un dominio se guarda la frase real del usuario en
+  `knowledge/aprendido.json` (máx. 50 ejemplos por dominio).
+- `detectar_dominio` combina palabras clave + similitud de tokens con los
+  ejemplos aprendidos (umbral 0.6).
+- `GET /conocimiento` lista lo aprendido; `POST /conocimiento` permite añadir
+  ejemplos o palabras clave sin tocar código.
 
 ### 16.4 Contrato propuesto (confirmar al implementar)
 Extender `RespuestaOrientacion` con campos opcionales:

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import ai.cuestionario as cuestionario
+import ai.embeddings as embeddings
 import tools.php_client as php_client
 from ai import ProveedorGemini
 from config import settings, ruta_cita_con_especialidad, RUTAS_FRONTEND
@@ -25,6 +26,16 @@ logging.basicConfig(
 logger = logging.getLogger("asistente")
 
 proveedor = ProveedorGemini()
+
+# Referencias a tareas en segundo plano (evita que el GC las elimine).
+_tareas_fondo: set[asyncio.Task] = set()
+
+
+def _tarea_fondo(coro) -> asyncio.Task:
+    tarea = asyncio.create_task(coro)
+    _tareas_fondo.add(tarea)
+    tarea.add_done_callback(_tareas_fondo.discard)
+    return tarea
 
 # Cuántos turnos previos se reenvían a Gemini en el flujo general.
 MAX_HISTORIAL = 12
@@ -62,6 +73,12 @@ if settings.CORS_ORIGINS.strip():
 class ConsultaIn(BaseModel):
     consulta: str = Field(..., min_length=1, max_length=2000)
     session_id: str | None = None
+
+
+class ConocimientoIn(BaseModel):
+    dominio: str
+    ejemplo: str | None = None
+    palabras_clave: list[str] = Field(default_factory=list)
 
 
 def verificar_api_key(x_api_key: str | None) -> None:
@@ -176,6 +193,10 @@ async def _cargar_contexto(estado: dict, usuario: dict) -> None:
     if guardada and guardada.get("datos"):
         estado["contexto"] = guardada["datos"]
         estado["contexto_cargado"] = True
+        # Si la memoria existe pero aún no tiene embedding (p. ej. base antigua
+        # o fallo previo), lo generamos en segundo plano.
+        if not guardada.get("embedding"):
+            _tarea_fondo(_indexar_memoria(usuario["id"], pid, guardada.get("resumen", "")))
         return
 
     controles, patologias = await asyncio.gather(
@@ -187,6 +208,17 @@ async def _cargar_contexto(estado: dict, usuario: dict) -> None:
 
     resumen = cuestionario.resumen_contexto(estado["contexto"])
     await memoria.guardar(usuario["id"], pid, resumen, estado["contexto"])
+
+    # El embedding se calcula en segundo plano para no retrasar la respuesta.
+    _tarea_fondo(_indexar_memoria(usuario["id"], pid, resumen))
+
+
+async def _indexar_memoria(id_usuario: str, id_paciente, resumen: str) -> None:
+    logger.info("Indexando memoria (usuario=%s paciente=%s)", id_usuario, id_paciente)
+    vector = await embeddings.embed(resumen)
+    logger.info("Embedding obtenido: %s", len(vector) if vector else None)
+    if vector:
+        await memoria.actualizar_embedding(id_usuario, id_paciente, vector)
 
 
 async def _finalizar(estado: dict, usuario: dict) -> dict:
@@ -273,7 +305,8 @@ async def _flujo_cuestionario(consulta: str, estado: dict, usuario: dict) -> dic
                 estado["siguiente_pregunta"] = "__paciente__"
                 estado["intentos_paciente"] = estado.get("intentos_paciente", 0) + 1
                 return _respuesta_pregunta(
-                    "¿Me confirma la cédula o el nombre del paciente para revisar sus antecedentes?",
+                    "Si desea que revise los antecedentes del paciente, indíqueme su cédula; "
+                    "si no, escriba «continuar».",
                     estado,
                 )
             estado["paciente_omitido"] = True
@@ -303,7 +336,8 @@ async def _flujo_general(consulta: str, historial_previo: list[dict], estado: di
     if respuesta.get("tipo_respuesta") == "aclaracion":
         usadas += 1
         estado["preguntas_generales"] = usadas
-        respuesta["progreso"] = min(100, int(round(100 * usadas / MAX_PREGUNTAS_GENERAL)))
+        # Se reserva el 100% para el cierre.
+        respuesta["progreso"] = min(90, int(round(100 * usadas / MAX_PREGUNTAS_GENERAL)))
     else:
         estado["completo"] = True
 
@@ -363,10 +397,21 @@ async def _procesar(consulta: str, historial_previo: list[dict], estado: dict, u
         estado.clear()
 
     if not estado.get("dominio"):
+        # Si ya empezó el flujo general (ya hizo preguntas), no cambiamos de
+        # dominio a mitad de conversación: eso reiniciaría y repetiría todo.
+        if int(estado.get("preguntas_generales", 0)) > 0:
+            return await _flujo_general(consulta, historial_previo, estado)
+
         dominio = cuestionario.detectar_dominio(consulta)
         if dominio:
             estado.clear()
             estado.update(cuestionario.nueva_sesion(dominio, consulta))
+            try:
+                # MIDI aprende la frase real del usuario para reconocer
+                # variantes parecidas en futuras conversaciones.
+                cuestionario.aprender_ejemplo(dominio, consulta)
+            except Exception:
+                logger.exception("No se pudo guardar el ejemplo aprendido")
         else:
             return await _flujo_general(consulta, historial_previo, estado)
 
@@ -496,6 +541,60 @@ async def ver_auditoria(
 ):
     verificar_api_key(x_api_key)
     return await auditoria.listar(limite)
+
+
+@app.get("/conocimiento")
+async def ver_conocimiento(x_api_key: str | None = Header(default=None)):
+    """Devuelve lo que MIDI ha aprendido (ejemplos/palabras por dominio)."""
+    verificar_api_key(x_api_key)
+    return cuestionario.listar_aprendido()
+
+
+@app.post("/conocimiento")
+async def aprender_conocimiento(
+    body: ConocimientoIn,
+    x_api_key: str | None = Header(default=None),
+):
+    """Permite añadir conocimiento a un dominio sin tocar código."""
+    verificar_api_key(x_api_key)
+
+    if body.dominio not in cuestionario.dominios():
+        raise HTTPException(status_code=404, detail="Dominio no encontrado")
+
+    ok = False
+    if body.ejemplo:
+        ok = cuestionario.aprender_ejemplo(body.dominio, body.ejemplo) or ok
+    if body.palabras_clave:
+        ok = cuestionario.aprender_palabras(body.dominio, body.palabras_clave) or ok
+
+    return {
+        "ok": ok,
+        "dominio": body.dominio,
+        "aprendido": cuestionario.listar_aprendido().get(body.dominio, {}),
+    }
+
+
+@app.get("/memoria/similares")
+async def memoria_similares(
+    request: Request,
+    q: str,
+    k: int = 5,
+    x_api_key: str | None = Header(default=None),
+):
+    """Memoria vectorizada: memorias del usuario más parecidas a la consulta."""
+    verificar_api_key(x_api_key)
+    usuario = _datos_usuario(request)
+    if not usuario["id"]:
+        raise HTTPException(status_code=400, detail="Usuario no identificado")
+
+    vector = await embeddings.embed(q)
+    if not vector:
+        return {"ok": False, "resultados": []}
+
+    return {
+        "ok": True,
+        "resultados": await memoria.buscar_similares(usuario["id"], vector, k),
+    }
 
 
 @app.delete("/memoria", status_code=204)

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS memorias (
     id_paciente TEXT NOT NULL DEFAULT '',
     resumen TEXT NOT NULL,
     datos_json TEXT,
+    embedding TEXT,
     actualizada_en TEXT NOT NULL,
     UNIQUE (id_usuario, id_paciente)
 );
@@ -64,4 +65,11 @@ CREATE TABLE IF NOT EXISTS memorias (
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
+
+        # Migración: bases creadas antes de la memoria vectorizada.
+        async with db.execute("PRAGMA table_info(memorias)") as cur:
+            columnas = {fila[1] for fila in await cur.fetchall()}
+        if "embedding" not in columnas:
+            await db.execute("ALTER TABLE memorias ADD COLUMN embedding TEXT")
+
         await db.commit()
