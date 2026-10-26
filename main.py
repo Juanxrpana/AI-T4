@@ -28,7 +28,9 @@ proveedor = ProveedorGemini()
 
 # Cuántos turnos previos se reenvían a Gemini en el flujo general.
 MAX_HISTORIAL = 12
-MAX_INTENTOS_PACIENTE = 3
+# Se pregunta la cédula una sola vez; si no la dan, se continúa sin historial.
+MAX_INTENTOS_PACIENTE = 1
+MAX_PREGUNTAS_GENERAL = 5
 
 
 @asynccontextmanager
@@ -222,6 +224,12 @@ async def _finalizar(estado: dict, usuario: dict) -> dict:
     if not respuesta.get("pruebas_sugeridas"):
         respuesta["pruebas_sugeridas"] = cfg.get("pruebas", [])
 
+    if not respuesta.get("posibles_asociaciones"):
+        respuesta["posibles_asociaciones"] = cfg.get("posibles_asociaciones", [])
+
+    if not respuesta.get("a_descartar"):
+        respuesta["a_descartar"] = cfg.get("a_descartar", [])
+
     if not respuesta.get("recomendacion") and candidata:
         respuesta["recomendacion"] = f"Agendar una cita con {candidata} para valoración."
 
@@ -283,6 +291,72 @@ async def _flujo_cuestionario(consulta: str, estado: dict, usuario: dict) -> dic
     return _respuesta_pregunta(pregunta["texto"], estado)
 
 
+async def _flujo_general(consulta: str, historial_previo: list[dict], estado: dict) -> dict:
+    """Flujo con Gemini para síntomas fuera de los dominios del cuestionario."""
+    usadas = int(estado.get("preguntas_generales", 0))
+
+    if usadas >= MAX_PREGUNTAS_GENERAL:
+        return await _cierre_general(consulta, historial_previo, estado)
+
+    respuesta = await proveedor.orientar(consulta, historial=historial_previo or None)
+
+    if respuesta.get("tipo_respuesta") == "aclaracion":
+        usadas += 1
+        estado["preguntas_generales"] = usadas
+        respuesta["progreso"] = min(100, int(round(100 * usadas / MAX_PREGUNTAS_GENERAL)))
+    else:
+        estado["completo"] = True
+
+    return respuesta
+
+
+async def _cierre_general(consulta: str, historial_previo: list[dict], estado: dict) -> dict:
+    """Fuerza la conclusión cuando ya se hicieron demasiadas preguntas."""
+    directiva = (
+        "CIERRE DE CONSULTA. No hagas más preguntas. Con la conversación previa y "
+        f"esta última respuesta (\"{consulta}\"), entrega la orientación final: "
+        "especialidad del catálogo, posibles asociaciones, a descartar y pruebas "
+        "sugeridas. Si no hay una especialidad clara, responde tipo catalogo."
+    )
+
+    try:
+        respuesta = await proveedor.orientar(directiva, historial=historial_previo or None)
+    except Exception:
+        logger.exception("Fallo al cerrar la consulta general")
+        respuesta = {
+            "tipo_respuesta": "derivar",
+            "mensaje": "No pude conectar con el modelo de IA para cerrar la orientación.",
+            "especialidad_sugerida": None,
+            "especialidades_disponibles": [],
+            "pregunta_aclaratoria": "",
+            "posibles_asociaciones": [],
+            "a_descartar": [],
+            "pruebas_sugeridas": [],
+            "recomendacion": "",
+            "observacion": "",
+            "modulo_sugerido": None,
+            "accion_sugerida": {"etiqueta": "", "ruta": "", "visible": False},
+        }
+
+    if respuesta.get("tipo_respuesta") == "aclaracion":
+        catalogo = php_client.get_catalogo_cache_sincrono()
+        candidata = next(
+            (c["nombre"] for c in catalogo if "consulta general" in c.get("nombre", "").lower()),
+            None,
+        )
+        respuesta["tipo_respuesta"] = "orientacion" if candidata else "derivar"
+        respuesta["especialidad_sugerida"] = candidata
+        respuesta["pregunta_aclaratoria"] = ""
+        respuesta["pregunta_activa"] = ""
+        if candidata:
+            respuesta["recomendacion"] = f"Agendar una valoración con {candidata}."
+        respuesta["accion_sugerida"] = _accion(candidata)
+
+    respuesta["progreso"] = 100
+    estado["completo"] = True
+    return respuesta
+
+
 async def _procesar(consulta: str, historial_previo: list[dict], estado: dict, usuario: dict) -> dict:
     # Si la sesión ya cerró un cuestionario, cada mensaje nuevo inicia otra consulta.
     if estado.get("completo"):
@@ -294,7 +368,7 @@ async def _procesar(consulta: str, historial_previo: list[dict], estado: dict, u
             estado.clear()
             estado.update(cuestionario.nueva_sesion(dominio, consulta))
         else:
-            return await proveedor.orientar(consulta, historial=historial_previo or None)
+            return await _flujo_general(consulta, historial_previo, estado)
 
     return await _flujo_cuestionario(consulta, estado, usuario)
 
@@ -358,7 +432,14 @@ async def orientar(
         php_client.usuario_actual.reset(token_usuario)
 
     await sesiones.guardar_estado(session_id, estado)
-    await sesiones.agregar_mensaje(session_id, "model", respuesta.get("mensaje", ""))
+
+    # Guardamos también la pregunta para que el historial no la pierda y el
+    # modelo no repita lo mismo en el siguiente turno.
+    texto_asistente = (respuesta.get("mensaje") or "").strip()
+    pregunta = respuesta.get("pregunta_activa") or respuesta.get("pregunta_aclaratoria")
+    if pregunta:
+        texto_asistente = f"{texto_asistente}\n{pregunta}".strip()
+    await sesiones.agregar_mensaje(session_id, "model", texto_asistente)
 
     latencia = int((time.perf_counter() - t0) * 1000)
     try:

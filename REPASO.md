@@ -83,7 +83,7 @@ componente_ia/
 │   ├── cuestionario.py  # motor del cuestionario (dominios + progreso)
 │   └── gemini.py        # ProveedorGemini
 ├── knowledge/
-│   └── dominios.json    # 3 dominios: dolor torácico, fiebre, dolor abdominal
+│   └── dominios.json    # 4 dominios: torácico, fiebre, abdominal, piel
 ├── storage/
 │   ├── db.py            # SQLite (sesiones, mensajes, auditoría, memorias)
 │   ├── sesiones.py
@@ -216,11 +216,13 @@ Requieren CSRF y sesión activa.
 - **Navegación a módulos**: si piden ver listas (pacientes, citas, doctores,
   insumos, reportes…), responde con tipo `navegacion` y botón al módulo correcto
   (`RUTAS_FRONTEND`), sin negarse por privacidad ni volcar datos.
-- **MIDI + cuestionario guiado**: 3 dominios (dolor torácico, fiebre, dolor
-  abdominal) en `knowledge/dominios.json`; motor en `ai/cuestionario.py`. Entre
-  3 y 5 preguntas, progreso, emergencia sin preguntar y orientación final con
-  listas (`posibles_asociaciones`, `a_descartar`, `pruebas_sugeridas`) + botón a
-  Citas con la especialidad.
+- **MIDI + cuestionario guiado**: 4 dominios (dolor torácico, fiebre, dolor
+  abdominal y lesión en la piel) en `knowledge/dominios.json`; motor en
+  `ai/cuestionario.py`. Una pregunta por mensaje, 3-5 en total, progreso,
+  emergencia sin preguntar y orientación final con listas + botón a Citas.
+- **Anti-repetición**: el historial guarda también la pregunta del asistente; el
+  flujo general (síntomas fuera de los dominios) hace una pregunta por mensaje y
+  cierra a las 5 aunque falte detalle.
 - **Historial del paciente**: `apiBuscarPaciente`, `apiControlesPaciente` y
   `apiPatologiasPaciente` (por cédula, validando personal), más las tools
   `buscar_paciente` y `datos_clinicos_paciente`. Ventana: últimos 6 meses (si no
@@ -367,7 +369,7 @@ La sesión vive en RAM del servidor. Al volver con el mismo `session_id` (guarda
 ### Hecho recientemente
 - Integración PHP del modal + proxy `Chat/preguntar` (CSRF, sesión, auditoría).
 - Datos del usuario logueado vía `mis_datos()` + `ControllerApi::apiDatosUsuario` + `ModeloApi`.
-- **MIDI**: cuestionario guiado por 3 dominios (`knowledge/dominios.json` + `ai/cuestionario.py`).
+- **MIDI**: cuestionario guiado por 4 dominios (`knowledge/dominios.json` + `ai/cuestionario.py`).
 - **Historial por cédula**: `apiBuscarPaciente`, `apiControlesPaciente`, `apiPatologiasPaciente` + tools.
 - **SQLite**: sesiones, mensajes, auditoría y memoria (`storage/`); `GET /auditoria` y `DELETE /memoria`.
 - **Modal**: progreso, listas de orientación y botón «Borrar memoria».

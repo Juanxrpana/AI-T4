@@ -4,6 +4,8 @@
     "palabras_clave": ["dolor de pecho", "dolor en el pecho", "pecho", "toracico", "torácico", "presion en el pecho", "presión en el pecho", "opresion", "opresión"],
     "especialidades": ["CARDIOLOGIA", "CONSULTA GENERAL"],
     "senal_alarma": ["opresivo", "irradia", "brazo izquierdo", "sudoracion", "sudoración", "disnea", "falta de aire", "desmayo", "mareo intenso"],
+    "posibles_asociaciones": ["sobrecarga o dolor muscular de la pared torácica", "origen cardiovascular", "reflujo gastroesofágico"],
+    "a_descartar": ["síndrome coronario agudo", "pericarditis", "embolia pulmonar"],
     "min_preguntas": 3,
     "max_preguntas": 5,
     "preguntas": [
@@ -20,6 +22,8 @@
     "palabras_clave": ["fiebre", "calentura", "temperatura alta", "escalofrios", "escalofríos", "decaimiento"],
     "especialidades": ["CONSULTA GENERAL"],
     "senal_alarma": ["convulsion", "convulsión", "dificultad para respirar", "rigidez de nuca", "somnolencia", "deshidratacion", "deshidratación", "manchas en la piel"],
+    "posibles_asociaciones": ["infección viral o bacteriana", "proceso inflamatorio", "reacción a medicamentos"],
+    "a_descartar": ["infección bacteriana grave", "deshidratación", "foco respiratorio o urinario"],
     "min_preguntas": 3,
     "max_preguntas": 5,
     "preguntas": [
@@ -36,6 +40,8 @@
     "palabras_clave": ["dolor de barriga", "dolor abdominal", "dolor de estomago", "dolor de estómago", "barriga", "abdomen", "colico", "cólico"],
     "especialidades": ["CONSULTA GENERAL"],
     "senal_alarma": ["sangre en heces", "vomito con sangre", "vómito con sangre", "rigidez", "dolor muy intenso", "desmayo"],
+    "posibles_asociaciones": ["gastritis o reflujo", "cuadro viral", "estreñimiento o cólico"],
+    "a_descartar": ["apendicitis", "colecistitis", "obstrucción intestinal"],
     "min_preguntas": 3,
     "max_preguntas": 5,
     "preguntas": [
@@ -46,5 +52,22 @@
       {"id": "antecedentes", "texto": "¿Ha tenido episodios parecidos o cirugías abdominales?"}
     ],
     "pruebas": ["Hemograma", "Ecografía abdominal", "Examen de orina"]
+  },
+  "lesion_piel": {
+    "nombre": "Lesión en la piel",
+    "palabras_clave": ["roja la piel", "piel roja", "enrojecimiento", "manchas en la piel", "sarpullido", "ronchas", "picazon", "picazón", "comezon", "comezón", "lesion en la piel", "lesión en la piel", "erupcion", "erupción"],
+    "especialidades": ["CONSULTA GENERAL"],
+    "senal_alarma": ["dificultad para respirar", "hinchazon de labios", "hinchazón de labios", "hinchazon de cara", "hinchazón de cara", "ampollas", "fiebre alta", "dolor intenso"],
+    "posibles_asociaciones": ["irritación por contacto", "reacción alérgica leve", "dermatitis"],
+    "a_descartar": ["infección cutánea", "reacción alérgica grave (anafilaxia)", "lesión por fármacos"],
+    "min_preguntas": 3,
+    "max_preguntas": 4,
+    "preguntas": [
+      {"id": "localizacion", "texto": "¿En qué parte del cuerpo está y desde cuándo apareció?"},
+      {"id": "sintomas", "texto": "¿Pica, duele, arde o está caliente al tacto?"},
+      {"id": "desencadenante", "texto": "¿Usó un producto nuevo, estuvo en contacto con plantas o animales, o comió algo diferente?"},
+      {"id": "otros", "texto": "¿Tiene fiebre, inflamación, ampollas o dificultad para respirar?"}
+    ],
+    "pruebas": ["Evaluación clínica de la lesión", "Hemograma si hay fiebre"]
   }
 }

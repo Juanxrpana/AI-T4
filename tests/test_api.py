@@ -144,6 +144,63 @@ def test_cuestionario_emergencia_no_pregunta(monkeypatch):
         assert cuerpo["pregunta_activa"] == ""
 
 
+def test_dominio_piel_pregunta_dirigida(monkeypatch):
+    _mock_php_paciente(monkeypatch, id_paciente=777)
+
+    with _cliente(monkeypatch) as c:
+        headers = {"X-API-Key": API_KEY, "X-Usuario-Id": "u-piel"}
+
+        r = c.post("/orientar", json={"consulta": "tengo roja la piel", "session_id": "piel-1"}, headers=headers)
+        assert r.json()["tipo_respuesta"] == "aclaracion"
+
+        r = c.post("/orientar", json={"consulta": "2000002", "session_id": "piel-1"}, headers=headers)
+        d = r.json()
+        assert "parte del cuerpo" in (d.get("pregunta_activa") or "").lower()
+
+
+def _respuesta_aclaracion():
+    return {
+        "tipo_respuesta": "aclaracion",
+        "mensaje": "Necesito más información.",
+        "especialidad_sugerida": None,
+        "especialidades_disponibles": [],
+        "pregunta_aclaratoria": "¿Desde cuándo?",
+        "observacion": "",
+        "accion_sugerida": {"etiqueta": "", "ruta": "", "visible": False},
+    }
+
+
+def test_flujo_general_cierra_tras_5_preguntas(monkeypatch):
+    import tools.php_client as php_client
+
+    monkeypatch.setattr(
+        php_client,
+        "get_catalogo_cache_sincrono",
+        lambda: [{"nombre": "CONSULTA GENERAL"}],
+    )
+
+    with _cliente(monkeypatch, orientar=lambda consulta, historial=None: _respuesta_aclaracion()) as c:
+        headers = {"X-API-Key": API_KEY, "X-Usuario-Id": "u-gen"}
+
+        for i in range(5):
+            r = c.post(
+                "/orientar",
+                json={"consulta": f"respuesta {i}", "session_id": "gen-1"},
+                headers=headers,
+            )
+            assert r.json()["tipo_respuesta"] == "aclaracion"
+
+        r = c.post(
+            "/orientar",
+            json={"consulta": "ultima respuesta", "session_id": "gen-1"},
+            headers=headers,
+        )
+        d = r.json()
+        assert d["tipo_respuesta"] == "orientacion"
+        assert d["progreso"] == 100
+        assert d["accion_sugerida"]["visible"] is True
+
+
 def test_orientar_sin_key(monkeypatch):
     with _cliente(monkeypatch) as c:
         r = c.post("/orientar", json={"consulta": "dolor de pecho"})
