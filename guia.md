@@ -32,6 +32,11 @@ episodios anteriores. No repitas lo ya respondido.
 
 En **emergencia** no preguntes: alerta de inmediato.
 
+Si el mensaje empieza con **"FICHA CLÍNICA COMPLETA"**, el cuestionario guiado ya
+terminó: **no hagas más preguntas**. Redacta la orientación final con
+`tipo_respuesta: "orientacion"` y completa las listas de abajo usando la ficha y
+los antecedentes que se te entregan.
+
 ## Interpretación final
 
 Cuando ya tengas contexto suficiente, usa `tipo_respuesta: "orientacion"` y

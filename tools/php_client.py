@@ -10,6 +10,7 @@ import contextvars
 import logging
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -101,3 +102,18 @@ async def get_mis_datos(id_usuario: int) -> dict:
     if isinstance(data, dict):
         return data
     return {"ok": False, "error": "No se pudieron obtener los datos del usuario."}
+
+
+async def buscar_paciente(q: str) -> list[dict]:
+    """Busca pacientes por cédula, nombre o apellido."""
+    return await _get(f"/Api/apiBuscarPaciente?q={quote(q)}")
+
+
+async def get_controles_paciente(id_paciente: int) -> list[dict]:
+    """Controles recientes (últimos 6 meses) del paciente."""
+    return await _get(f"/Api/apiControlesPaciente/{id_paciente}")
+
+
+async def get_patologias_paciente(id_paciente: int) -> list[dict]:
+    """Patologías diagnosticadas al paciente."""
+    return await _get(f"/Api/apiPatologiasPaciente/{id_paciente}")

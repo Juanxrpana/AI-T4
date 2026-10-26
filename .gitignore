@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 .vscode/
 .idea/
+# Base local de MIDI (sesiones/auditoria)
+storage/*.db
+storage/*.db-journal

@@ -1,0 +1,50 @@
+{
+  "dolor_toracico": {
+    "nombre": "Dolor torácico",
+    "palabras_clave": ["dolor de pecho", "dolor en el pecho", "pecho", "toracico", "torácico", "presion en el pecho", "presión en el pecho", "opresion", "opresión"],
+    "especialidades": ["CARDIOLOGIA", "CONSULTA GENERAL"],
+    "senal_alarma": ["opresivo", "irradia", "brazo izquierdo", "sudoracion", "sudoración", "disnea", "falta de aire", "desmayo", "mareo intenso"],
+    "min_preguntas": 3,
+    "max_preguntas": 5,
+    "preguntas": [
+      {"id": "intensidad", "texto": "¿Qué tan intenso es el dolor, de 1 a 10?"},
+      {"id": "irradiacion", "texto": "¿El dolor se corre al brazo, cuello, mandíbula o espalda?"},
+      {"id": "esfuerzo", "texto": "¿Aparece con el esfuerzo o también en reposo?"},
+      {"id": "duracion", "texto": "¿Desde cuándo lo tiene y cuánto dura cada episodio?"},
+      {"id": "asociados", "texto": "¿Tiene sudoración, falta de aire, náuseas o mareo?"}
+    ],
+    "pruebas": ["Electrocardiograma", "Troponinas", "Radiografía de tórax"]
+  },
+  "fiebre": {
+    "nombre": "Fiebre",
+    "palabras_clave": ["fiebre", "calentura", "temperatura alta", "escalofrios", "escalofríos", "decaimiento"],
+    "especialidades": ["CONSULTA GENERAL"],
+    "senal_alarma": ["convulsion", "convulsión", "dificultad para respirar", "rigidez de nuca", "somnolencia", "deshidratacion", "deshidratación", "manchas en la piel"],
+    "min_preguntas": 3,
+    "max_preguntas": 5,
+    "preguntas": [
+      {"id": "duracion", "texto": "¿Desde hace cuántos días tiene fiebre?"},
+      {"id": "temperatura", "texto": "¿Se ha medido la temperatura? ¿Cuánto marca?"},
+      {"id": "asociados", "texto": "¿Tiene tos, dolor de garganta, diarrea, vómito o dolor al orinar?"},
+      {"id": "viajes", "texto": "¿Ha viajado o estado en contacto con alguien enfermo?"},
+      {"id": "medicamentos", "texto": "¿Ha tomado algo para la fiebre?"}
+    ],
+    "pruebas": ["Hemograma", "Proteína C reactiva", "Examen de orina"]
+  },
+  "dolor_abdominal": {
+    "nombre": "Dolor abdominal",
+    "palabras_clave": ["dolor de barriga", "dolor abdominal", "dolor de estomago", "dolor de estómago", "barriga", "abdomen", "colico", "cólico"],
+    "especialidades": ["CONSULTA GENERAL"],
+    "senal_alarma": ["sangre en heces", "vomito con sangre", "vómito con sangre", "rigidez", "dolor muy intenso", "desmayo"],
+    "min_preguntas": 3,
+    "max_preguntas": 5,
+    "preguntas": [
+      {"id": "localizacion", "texto": "¿En qué parte del abdomen duele (arriba, abajo, lado derecho o izquierdo)?"},
+      {"id": "duracion", "texto": "¿Desde cuándo duele y es constante o va y viene?"},
+      {"id": "relacion", "texto": "¿Empeora con la comida, el movimiento o al presionar?"},
+      {"id": "asociados", "texto": "¿Tiene náuseas, vómito, diarrea, estreñimiento o fiebre?"},
+      {"id": "antecedentes", "texto": "¿Ha tenido episodios parecidos o cirugías abdominales?"}
+    ],
+    "pruebas": ["Hemograma", "Ecografía abdominal", "Examen de orina"]
+  }
+}

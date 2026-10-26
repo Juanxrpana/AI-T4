@@ -80,11 +80,19 @@ componente_ia/
 │   ├── __init__.py
 │   ├── base.py          # clase abstracta ProveedorIA
 │   ├── schemas.py       # Pydantic: RespuestaOrientacion, AccionSugerida
+│   ├── cuestionario.py  # motor del cuestionario (dominios + progreso)
 │   └── gemini.py        # ProveedorGemini
-└── tools/
+├── knowledge/
+│   └── dominios.json    # 3 dominios: dolor torácico, fiebre, dolor abdominal
+├── storage/
+│   ├── db.py            # SQLite (sesiones, mensajes, auditoría, memorias)
+│   ├── sesiones.py
+│   ├── auditoria.py
+│   └── memoria.py       # resumen por usuario/paciente
+├── tools/
     ├── __init__.py
     ├── php_client.py    # httpx + caché del catálogo
-    └── clinica.py       # listar_doctores (la única tool)
+    └── clinica.py       # listar_doctores, mis_datos, buscar_paciente, datos_clinicos_paciente
 ```
 
 ---
@@ -132,6 +140,9 @@ Otros endpoints: `GET /`, `GET /sesiones/{id}`, `DELETE /sesiones/{id}`.
 GET /Api/apiEspecialidades                     → [{id_categoria, nombre}, ...]
 GET /Api/apiDoctoresPorEspecialidad/{id}       → [{id_personal, nombre_doctor, apellido_doctor}, ...]
 GET /Api/apiDatosUsuario/{id_usuario}          → {acceso, paciente, historial[], citas[], hospitalizaciones[]}
+GET /Api/apiBuscarPaciente?q=...                → [{id_paciente, cedula, nombre, apellido}]
+GET /Api/apiControlesPaciente/{id_paciente}    → [{fecha_control, diagnostico, sintomas, ...}]
+GET /Api/apiPatologiasPaciente/{id_paciente}   → [{nombre_patologia, fecha_registro}]
 ```
 Todos requieren `X-API-Key` que coincida con `$_ENV['API_KEY_IA']`.
 
@@ -139,11 +150,16 @@ Todos requieren `X-API-Key` que coincida con `$_ENV['API_KEY_IA']`.
 (`personal.cedula = paciente.cedula`). Solo acceso para personal del centro
 (con fila en `personal`); un usuario normal recibe `acceso: "denegado"`.
 
-### Endpoint en `ControllerChat.php` (lo llama el navegador)
+Los tres endpoints de pacientes (`buscar`, `controles`, `patologias`) exigen
+además `X-Usuario-Id` de un usuario del personal (`validarPersonalDelCentroApi`).
+`apiControlesPaciente` devuelve los últimos 6 meses; si no hay, los últimos 5.
+
+### Endpoints en `ControllerChat.php` (los llama el navegador)
 ```
-POST /Chat/preguntar  →  proxy a FastAPI
+POST   /Chat/preguntar       →  proxy a FastAPI (/orientar)
+POST   /Chat/borrarMemoria   →  proxy a FastAPI (DELETE /memoria)
 ```
-Requiere CSRF y sesión activa.
+Requieren CSRF y sesión activa.
 
 ---
 
@@ -200,6 +216,20 @@ Requiere CSRF y sesión activa.
 - **Navegación a módulos**: si piden ver listas (pacientes, citas, doctores,
   insumos, reportes…), responde con tipo `navegacion` y botón al módulo correcto
   (`RUTAS_FRONTEND`), sin negarse por privacidad ni volcar datos.
+- **MIDI + cuestionario guiado**: 3 dominios (dolor torácico, fiebre, dolor
+  abdominal) en `knowledge/dominios.json`; motor en `ai/cuestionario.py`. Entre
+  3 y 5 preguntas, progreso, emergencia sin preguntar y orientación final con
+  listas (`posibles_asociaciones`, `a_descartar`, `pruebas_sugeridas`) + botón a
+  Citas con la especialidad.
+- **Historial del paciente**: `apiBuscarPaciente`, `apiControlesPaciente` y
+  `apiPatologiasPaciente` (por cédula, validando personal), más las tools
+  `buscar_paciente` y `datos_clinicos_paciente`. Ventana: últimos 6 meses (si no
+  hay, últimos 5 controles).
+- **Persistencia SQLite**: sesiones, mensajes, auditoría y memorias (`storage/`).
+  Endpoints `GET /auditoria` y `DELETE /memoria`.
+- **Memoria por usuario/paciente**: resumen de antecedentes para no reconsultar
+  a PHP en cada mensaje. Se borra con el botón **«Borrar memoria»**
+  (`/Chat/borrarMemoria`).
 - Validación de especialidades contra catálogo real.
 - Emergencias clasificadas y sin botón.
 - Filtro `hash_equals`/`compare_digest` para la API key (fail-closed en ambos lados).
@@ -211,8 +241,9 @@ Requiere CSRF y sesión activa.
   página (p. ej. al cambiar de módulo desde un botón), al reabrir el asistente
   aparecen **“Continuar chat”** y **“Nuevo chat”** en vez de borrarse.
 - El proxy envía `X-Usuario-Id/Rol/Nombre`; el componente los registra en su log.
-- **Tests automáticos** de `/orientar`, manejo de errores, `listar_doctores` y
-  `mis_datos` (`tests/`, con `pytest`). 13 tests en verde.
+- **Tests automáticos** de `/orientar`, cuestionario, emergencia, auditoría,
+  persistencia, `listar_doctores` y `mis_datos` (`tests/`, con `pytest`).
+  **22 tests en verde**.
 - Hardening: `lifespan` en vez de `on_event`, `logging` en vez de `print`,
   respuesta de error sin filtrar detalles internos, catálogo con reintento
   perezoso, CORS desactivado salvo que `CORS_ORIGINS` traiga orígenes.
@@ -224,7 +255,8 @@ Requiere CSRF y sesión activa.
   lanzaba `ValueError`).
 
 ### ⚠️ Pendiente de verificar
-- Prueba end-to-end en el navegador: botón flotante → PHP → FastAPI → Gemini.
+- Prueba en el navegador: cuestionario completo, progreso, listas y «Borrar
+  memoria» (el flujo API→PHP→Gemini ya se probó con TestClient).
 - Que la ruta de acción (`/Citas/citasHoy?especialidad=…`) preseleccione la
   especialidad en el modal de citas (hoy solo navega al módulo).
 
@@ -232,7 +264,8 @@ Requiere CSRF y sesión activa.
 - `ControllerApi.php` — los endpoints `apiEspecialidades` y `apiDoctoresPorEspecialidad` **no validan unhashId** porque no reciben IDs hasheados; trabajan con IDs enteros directos.
 - Las rutas del frontend en `config/modulos.py` están **hardcodeadas** (ahora incluyen el prefijo `/Sistema-del--CEM--JEHOVA-RAFA`). Si cambian en PHP, hay que actualizarlas.
 - El caché del catálogo es **por proceso**. Si levantas varias instancias de uvicorn, cada una tendrá su caché.
-- Las sesiones viven en RAM. Se pierden al reiniciar FastAPI.
+- La memoria es un **resumen en SQLite**, sin embeddings; la búsqueda semántica/vectorizada queda pendiente.
+- `GET /auditoria` se protege solo con la **API key** (no por rol).
 
 ---
 
@@ -277,10 +310,10 @@ IA_API_URL=http://127.0.0.1:8000/orientar
 GEMINI_API_KEY=tu_api_key_de_google_ai_studio
 PHP_BASE_URL=http://localhost/Sistema-del--CEM--JEHOVA-RAFA
 API_KEY_COMPARTIDA=cambia_esto_por_algo_largo_y_aleatorio
-MODELO_GEMINI=gemini-3.8-flash
+MODELO_GEMINI=gemini-3-flash-preview
 # Si el principal da 503/429 o tarda más de IA_TIMEOUT_MODELO, se prueba el siguiente.
-MODELOS_FALLBACK=gemini-3.5-flash,gemini-2.5-flash,gemini-flash-latest
-IA_TIMEOUT_MODELO=12
+MODELOS_FALLBACK=gemini-3.5-flash,gemini-3.8-flash,gemini-3.1-flash-lite,gemini-3.7-flash
+IA_TIMEOUT_MODELO=8
 ```
 
 **Importante:** `API_KEY_IA` (PHP) y `API_KEY_COMPARTIDA` (FastAPI) **deben ser el mismo valor**.
@@ -334,8 +367,12 @@ La sesión vive en RAM del servidor. Al volver con el mismo `session_id` (guarda
 ### Hecho recientemente
 - Integración PHP del modal + proxy `Chat/preguntar` (CSRF, sesión, auditoría).
 - Datos del usuario logueado vía `mis_datos()` + `ControllerApi::apiDatosUsuario` + `ModeloApi`.
+- **MIDI**: cuestionario guiado por 3 dominios (`knowledge/dominios.json` + `ai/cuestionario.py`).
+- **Historial por cédula**: `apiBuscarPaciente`, `apiControlesPaciente`, `apiPatologiasPaciente` + tools.
+- **SQLite**: sesiones, mensajes, auditoría y memoria (`storage/`); `GET /auditoria` y `DELETE /memoria`.
+- **Modal**: progreso, listas de orientación y botón «Borrar memoria».
 - Hardening del componente (lifespan, logging, key fail-closed, sin fugas).
-- Tests `pytest` (`tests/`).
+- Tests `pytest` (`tests/`, 22 en verde).
 - Corregida la regla de `.htaccess` que bloqueaba `src/controladores` en vez de `src/controllers`.
 
 ---
@@ -360,10 +397,9 @@ La sesión vive en RAM del servidor. Al volver con el mismo `session_id` (guarda
 
 ---
 
-## 16. Nueva funcionalidad en diseño: MIDI (mini consulta + memoria)
+## 16. MIDI: mini consulta + cuestionario + memoria
 
-> Estado: **DISEÑO ACORDADO, SIN IMPLEMENTAR**. No escribir código hasta que el
-> humano lo confirme.
+> Estado: **IMPLEMENTADO (MVP)**. Ver el estado detallado en la sección 8.
 
 **Nombre:** el asistente se llama **MIDI** (no es acrónimo ni abreviatura).
 Significado de trabajo propuesto: **Módulo Inteligente de Derivación e

@@ -35,7 +35,19 @@ logger = logging.getLogger("asistente.gemini")
 
 class ProveedorGemini(ProveedorIA):
     def __init__(self):
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        # La API exige un deadline mínimo de 10 s. Usamos ese piso para evitar
+        # el 400 "Manually set deadline is too short".
+        self.timeout_modelo = max(10.0, float(settings.IA_TIMEOUT_MODELO))
+
+        # Sin reintentos internos del SDK: si un modelo da 503, pasamos rápido
+        # al siguiente en vez de esperar varios segundos por cada intento.
+        self.client = genai.Client(
+            api_key=settings.GEMINI_API_KEY,
+            http_options=types.HttpOptions(
+                timeout=int(self.timeout_modelo * 1000),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
         self.modelo = settings.MODELO_GEMINI
         self.modelos = self._lista_modelos()
         self.guia = Path("guia.md").read_text(encoding="utf-8")
@@ -162,7 +174,7 @@ class ProveedorGemini(ProveedorIA):
             try:
                 return await asyncio.wait_for(
                     self._con_modelo(modelo, consulta, contenido),
-                    timeout=settings.IA_TIMEOUT_MODELO,
+                    timeout=self.timeout_modelo,
                 )
             except genai_errors.APIError as e:
                 # 503 (alta demanda), 429 (cuota) u otros errores del servicio.
@@ -170,7 +182,7 @@ class ProveedorGemini(ProveedorIA):
                 ultimo_error = e
             except asyncio.TimeoutError as e:
                 logger.warning("Modelo %s excedió %.1fs; probando el siguiente",
-                               modelo, settings.IA_TIMEOUT_MODELO)
+                               modelo, self.timeout_modelo)
                 ultimo_error = e
             except Exception as e:
                 logger.exception("Error inesperado con el modelo %s", modelo)

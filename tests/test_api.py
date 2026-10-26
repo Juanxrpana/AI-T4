@@ -53,7 +53,7 @@ def test_orientar_con_key_valida(monkeypatch):
     with _cliente(monkeypatch) as c:
         r = c.post(
             "/orientar",
-            json={"consulta": "paciente con dolor de pecho"},
+            json={"consulta": "manchas rojas en la piel"},
             headers={"X-API-Key": API_KEY, "X-Usuario-Nombre": "Ana"},
         )
         assert r.status_code == 200
@@ -61,6 +61,87 @@ def test_orientar_con_key_valida(monkeypatch):
         assert cuerpo["tipo_respuesta"] == "orientacion"
         assert cuerpo["session_id"]
         assert cuerpo["accion_sugerida"]["visible"] is True
+
+
+def _mock_php_paciente(monkeypatch, id_paciente=999):
+    async def fake_buscar(q):
+        return [{"id_paciente": id_paciente, "cedula": "2000002", "nombre": "Ana", "apellido": "Pérez"}]
+
+    async def fake_controles(pid):
+        return [{
+            "fecha_control": "2026-01-01 10:00:00",
+            "diagnostico": "Asma",
+            "medicamentosRecetados": "Salbutamol",
+            "sintomas": "Disnea",
+        }]
+
+    async def fake_patologias(pid):
+        return [{"nombre_patologia": "ASMA", "fecha_registro": "2025-01-01"}]
+
+    monkeypatch.setattr(main.php_client, "buscar_paciente", fake_buscar)
+    monkeypatch.setattr(main.php_client, "get_controles_paciente", fake_controles)
+    monkeypatch.setattr(main.php_client, "get_patologias_paciente", fake_patologias)
+
+
+def test_cuestionario_no_deriva_con_un_sintoma(monkeypatch):
+    with _cliente(monkeypatch) as c:
+        r = c.post(
+            "/orientar",
+            json={"consulta": "fiebre", "session_id": "q-solo"},
+            headers={"X-API-Key": API_KEY},
+        )
+        cuerpo = r.json()
+        assert cuerpo["tipo_respuesta"] == "aclaracion"
+        assert cuerpo["tipo_respuesta"] != "derivar"
+
+
+def test_cuestionario_pide_cedula(monkeypatch):
+    with _cliente(monkeypatch) as c:
+        r = c.post(
+            "/orientar",
+            json={"consulta": "me duele el pecho", "session_id": "q-cedula"},
+            headers={"X-API-Key": API_KEY},
+        )
+        cuerpo = r.json()
+        assert cuerpo["tipo_respuesta"] == "aclaracion"
+        assert "cédula" in cuerpo["pregunta_activa"].lower()
+
+
+def test_cuestionario_flujo_completo(monkeypatch):
+    _mock_php_paciente(monkeypatch, id_paciente=888)
+
+    with _cliente(monkeypatch) as c:
+        headers = {"X-API-Key": API_KEY, "X-Usuario-Id": "u-flujo"}
+
+        # 1) Sintoma -> pide cedula
+        r = c.post("/orientar", json={"consulta": "me duele el pecho", "session_id": "q-flujo"}, headers=headers)
+        assert r.json()["tipo_respuesta"] == "aclaracion"
+
+        # 2) Cedula -> primera pregunta del dominio
+        r = c.post("/orientar", json={"consulta": "2000002", "session_id": "q-flujo"}, headers=headers)
+        assert r.json()["tipo_respuesta"] == "aclaracion"
+
+        # 3) Tres respuestas -> orientacion final
+        for respuesta in ["7", "no", "con el esfuerzo"]:
+            r = c.post("/orientar", json={"consulta": respuesta, "session_id": "q-flujo"}, headers=headers)
+
+        cuerpo = r.json()
+        assert cuerpo["tipo_respuesta"] == "orientacion"
+        assert cuerpo["progreso"] == 100
+        assert cuerpo["pruebas_sugeridas"]
+        assert cuerpo["accion_sugerida"]["visible"] is True
+
+
+def test_cuestionario_emergencia_no_pregunta(monkeypatch):
+    with _cliente(monkeypatch) as c:
+        r = c.post(
+            "/orientar",
+            json={"consulta": "dolor de pecho opresivo con falta de aire"},
+            headers={"X-API-Key": API_KEY},
+        )
+        cuerpo = r.json()
+        assert cuerpo["tipo_respuesta"] == "emergencia"
+        assert cuerpo["pregunta_activa"] == ""
 
 
 def test_orientar_sin_key(monkeypatch):
@@ -83,7 +164,7 @@ def test_orientar_consulta_corta(monkeypatch):
     with _cliente(monkeypatch) as c:
         r = c.post(
             "/orientar",
-            json={"consulta": "a"},
+            json={"consulta": ""},
             headers={"X-API-Key": API_KEY},
         )
         assert r.status_code == 422
@@ -145,3 +226,18 @@ def test_sesion_se_guarda_y_se_borra(monkeypatch):
 
         r = c.get("/sesiones/s-1", headers={"X-API-Key": API_KEY})
         assert r.status_code == 404
+
+
+def test_auditoria_registra_y_lista(monkeypatch):
+    with _cliente(monkeypatch) as c:
+        c.post(
+            "/orientar",
+            json={"consulta": "manchas rojas en la piel", "session_id": "aud-1"},
+            headers={"X-API-Key": API_KEY, "X-Usuario-Id": "u-aud"},
+        )
+
+        r = c.get("/auditoria?limite=10", headers={"X-API-Key": API_KEY})
+        assert r.status_code == 200
+        filas = r.json()
+        assert isinstance(filas, list)
+        assert any(f["session_id"] == "aud-1" for f in filas)
