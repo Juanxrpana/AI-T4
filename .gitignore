@@ -9,3 +9,6 @@ __pycache__/
 # Base local de MIDI (sesiones/auditoria)
 storage/*.db
 storage/*.db-journal
+
+# Payloads crudos de diagnóstico de IA (pueden contener datos clínicos)
+storage/debug_ia/

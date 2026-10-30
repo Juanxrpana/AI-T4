@@ -1,0 +1,3 @@
+﻿# Mantener los scripts de shell con LF (Linux)
+*.sh text eol=lf
+

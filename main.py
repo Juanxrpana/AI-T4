@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import ai.cuestionario as cuestionario
 import ai.embeddings as embeddings
 import tools.php_client as php_client
-from ai import ProveedorGemini
+from ai import crear_proveedor
 from config import settings, ruta_cita_con_especialidad, RUTAS_FRONTEND
 from storage import init_db
 from storage import auditoria, memoria, sesiones
@@ -25,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("asistente")
 
-proveedor = ProveedorGemini()
+proveedor = crear_proveedor()
 
 # Referencias a tareas en segundo plano (evita que el GC las elimine).
 _tareas_fondo: set[asyncio.Task] = set()
@@ -499,7 +499,7 @@ async def orientar(
             "tipo_respuesta": respuesta.get("tipo_respuesta"),
             "especialidad_sugerida": respuesta.get("especialidad_sugerida"),
             "pruebas_sugeridas": respuesta.get("pruebas_sugeridas"),
-            "modelo_usado": settings.MODELO_GEMINI,
+            "modelo_usado": getattr(proveedor, "nombre_modelo", settings.MODELO_GEMINI),
             "latencia_ms": latencia,
             "tools_usadas": "cuestionario" if estado.get("dominio") else "gemini",
             "json_respuesta": respuesta,

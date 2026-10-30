@@ -7,6 +7,15 @@ class ProveedorIA(ABC):
     Permite cambiar Gemini por otro modelo sin tocar el resto del sistema.
     """
 
+    @property
+    def nombre_modelo(self) -> str:
+        """Identificador legible del modelo, usado en auditoría."""
+        return type(self).__name__
+
+    async def precargar_catalogo(self) -> None:
+        """Hook opcional para calentar el catálogo al arrancar."""
+        return None
+
     @abstractmethod
     async def orientar(
         self,

@@ -45,13 +45,18 @@ class ProveedorGemini(ProveedorIA):
             api_key=settings.GEMINI_API_KEY,
             http_options=types.HttpOptions(
                 timeout=int(self.timeout_modelo * 1000),
-                retry_options=types.HttpRetryOptions(attempts=1),
+                
             ),
         )
         self.modelo = settings.MODELO_GEMINI
+        self.modelo_actual = self.modelo
         self.modelos = self._lista_modelos()
         self.guia = Path("guia.md").read_text(encoding="utf-8")
         self.max_iteraciones = 4  # antes 6, con menos tools 4 basta
+
+    @property
+    def nombre_modelo(self) -> str:
+        return f"gemini:{self.modelo_actual}"
 
     def _lista_modelos(self) -> list[str]:
         """Modelo principal + fallbacks configurados, sin duplicados."""
@@ -171,6 +176,7 @@ class ProveedorGemini(ProveedorIA):
 
         ultimo_error: Exception | None = None
         for modelo in self.modelos:
+            self.modelo_actual = modelo
             try:
                 return await asyncio.wait_for(
                     self._con_modelo(modelo, consulta, contenido),
