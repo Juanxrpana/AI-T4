@@ -19,6 +19,7 @@ class RespuestaOrientacion(BaseModel):
         "derivar",
         "datos",
         "navegacion",
+        "registro_paciente",
     ]
     mensaje: str = Field(..., description="Texto breve para la secretaria.")
     especialidad_sugerida: str | None = None
@@ -36,3 +37,6 @@ class RespuestaOrientacion(BaseModel):
     pregunta_activa: str = ""
     progreso: int = 0
     informacion_recopilada: dict = Field(default_factory=dict)
+    # Borrador de paciente para el tipo "registro_paciente". El navegador lo
+    # confirma y llama a /Pacientes/guardarDesdeChatbot; FastAPI no escribe.
+    paciente_borrador: dict | None = None

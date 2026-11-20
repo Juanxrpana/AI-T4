@@ -98,7 +98,7 @@ def _datos_usuario(request: Request) -> dict:
 
 
 def _extraer_cedula(texto: str) -> str | None:
-    m = re.search(r"\b(\d{6,10})\b", texto or "")
+    m = re.search(r"\b([1-9][0-9]{6,7}(?:-R[0-9]{1,2})?)\b", texto or "")
     return m.group(1) if m else None
 
 

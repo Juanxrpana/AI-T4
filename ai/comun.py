@@ -35,6 +35,14 @@ def system_prompt(guia: str) -> str:
         f"Si la persona pide su historial, síntomas, citas u hospitalizaciones, "
         f"usa la herramienta `mis_datos()` (sin argumentos) y responde con "
         f"`tipo_respuesta: \"datos\"` usando lo que devuelva.\n\n"
+        f"## Registro de paciente\n"
+        f"Solo recepción puede registrar pacientes. Pide un dato por mensaje: "
+        f"nacionalidad (V/E), cédula, nombre, apellido, teléfono, dirección, "
+        f"fecha de nacimiento (AAAA-MM-DD) y género. Si es menor de 18 años, pide "
+        f"la cédula del representante. Cuando tengas todos los datos, responde "
+        f"`tipo_respuesta: \"registro_paciente\"` y devuelve `paciente_borrador` "
+        f"con esas claves. No crees pacientes: solo devuelves el borrador. No "
+        f"permitas que un doctor registre.\n\n"
         f"## Navegación a módulos\n"
         f"Si piden ver una lista o ir a un módulo (pacientes, clientes, citas, "
         f"citas de hoy, citas realizadas, doctores, especialidades, "
@@ -74,8 +82,9 @@ def construir_accion(r: RespuestaOrientacion) -> dict:
 
 def validar_respuesta(r: RespuestaOrientacion) -> RespuestaOrientacion:
     """Corrige la salida del modelo contra el catálogo y los módulos reales."""
-    # En emergencia, catalogo, datos y navegacion, la especialidad va vacía.
-    if r.tipo_respuesta in ("emergencia", "catalogo", "datos", "navegacion"):
+    # En emergencia, catalogo, datos, navegacion y registro de paciente, la
+    # especialidad va vacía.
+    if r.tipo_respuesta in ("emergencia", "catalogo", "datos", "navegacion", "registro_paciente"):
         r.especialidad_sugerida = None
 
     # Navegación: si el módulo no es válido, no se inventa una ruta.
