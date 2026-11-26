@@ -37,13 +37,13 @@ Secuencia:
 
 - **Root obligatorio.** El script aborta si no se ejecuta como root.
 - **Rutas obligatorias.** `APP_DIR` debe existir y contener `requirements.txt` y `.env`; si falta cualquiera, aborta.
-- **Usuario existente.** `RUN_USER` debe existir en el sistema; el script no lo crea.
+- **Usuario existente.** `RUN_USER` debe existir; el script no lo crea.
 - **Entorno aislado.** Las dependencias se instalan en `APP_DIR/.venv`, no en el Python del sistema.
-- **Permisos.** El script hace `chown -R` de todo `APP_DIR` e intenta dejar `.env` en modo `600`.
+- **Permisos.** Hace `chown -R` de todo `APP_DIR` e intenta dejar `.env` en modo `600`.
 - **Escucha local.** La unidad usa `--host 127.0.0.1`; el puerto no se expone a Internet.
 - **Reinicio automático.** La unidad usa `Restart=always` y `RestartSec=5`.
-- **Sin instalación de paquetes.** El script asume que `python3`, `python3-venv` y `curl` ya están instalados; no instala paquetes del sistema.
-- **Sin configuración de PHP.** El script solo recuerda que el `.env` de CEMJR debe tener `IA_API_URL` y `API_KEY_IA`; no los escribe.
+- **Sin paquetes del sistema.** Asume `python3`, `python3-venv` y `curl` instalados.
+- **Sin configuración de PHP.** Solo recuerda que CEMJR debe tener `IA_API_URL` y `API_KEY_IA`; no los escribe.
 
 ## Side Effects
 
@@ -53,10 +53,11 @@ Secuencia:
 - Escritura de `/etc/systemd/system/${SERVICE_NAME}.service`.
 - `systemctl daemon-reload`, `enable` y `restart`.
 - Petición HTTP GET a `http://127.0.0.1:${PORT}/docs` si `curl` está disponible.
-- Sin cambios en la base de datos clínica, sin apertura de puertos y sin configuración del proxy PHP.
+- Sin cambios en la base clínica, sin apertura de puertos y sin configurar el proxy PHP.
 
 ## Verification
 
-- Run: `pytest`
+- Run: `python -m pytest -q`
 - Verificación del script: `bash -n deploy/install-midi-service.sh` si hay Bash disponible.
-- Nota: la ejecución real requiere un VPS Linux, root y un `.env` configurado. No ejecutar el instalador en el entorno de desarrollo Windows.
+- En el VPS: `systemctl status midi`, `journalctl -u midi -n 50 --no-pager` y `curl http://127.0.0.1:8000/salud`.
+- Nota: la ejecución real requiere un VPS Linux, root y un `.env` configurado. No ejecutar el instalador en Windows.

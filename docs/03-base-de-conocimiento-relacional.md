@@ -24,10 +24,25 @@ MIDI separa el conocimiento en dos planos que se complementan:
 
 | Plano | Qué contiene | Implementación actual | Uso |
 |---|---|---|---|
-| **Plano 1 — Conocimiento curado** | Dominios clínicos, preguntas, palabras clave, señales de alarma, especialidades, pruebas, asociaciones y hallazgos a descartar. | Archivos JSON: `knowledge/dominios.json` y `knowledge/aprendido.json`. | Alimenta la detección de dominio, el cuestionario y la ficha clínica. |
-| **Plano 2 — Conocimiento operativo** | Sesiones, mensajes, resúmenes de memoria, embeddings y auditoría. | Tablas SQLite en `storage/midi.db`. | Conserva el estado de la conversación, la memoria por usuario/paciente y la trazabilidad. |
+| **Plano 1 — Conocimiento curado** | Dominios clínicos, preguntas, palabras clave, señales de alarma, especialidades, pruebas, asociaciones y hallazgos a descartar. | Tablas SQLite de `storage/schema.sql` (Fase 1). `knowledge/*.json` queda solo como semilla de migración. | Alimenta la detección de dominio, el cuestionario y la ficha clínica. |
+| **Plano 2 — Conocimiento operativo** | Sesiones, mensajes, consultas, turnos, resúmenes de memoria, embeddings y auditoría. | Tablas SQLite en `storage/midi.db`. | Conserva el estado de la conversación, la identidad del caso, la memoria por usuario/paciente y la trazabilidad. |
 
-> **Nota importante para la presentación:** el plano 1 está implementado hoy como JSON. El modelo relacional que se muestra a continuación es su **representación normalizada equivalente**, propuesta para facilitar consultas, integridad referencial y escalabilidad. El plano 2 sí existe físicamente como tablas SQLite. Esta distinción evita atribuir al sistema actual tablas que aún no están desplegadas.
+> **Estado de implementación (2026-11-26):** el plano 1 ya está desplegado como tablas SQLite. `scripts/seed_kb.py` migra los JSON una sola vez y publica una `kb_version` con snapshot y hash SHA-256. El runtime lee la KB activa con `storage/conocimiento.py`; no vuelve a abrir los JSON. Cada tabla de lista tiene `activo` y `estado`, y las palabras/señales conservan alias con `alias_de`. La identidad `consulta`/`turno` añade idempotencia por `peticion_id` y separa el caso clínico de la sesión de chat.
+
+### 3.2.1 Mapeo del modelo anterior al implementado
+
+| Modelo anterior | Implementación Fase 1 |
+|---|---|
+| `dominio` | `dominio` |
+| `dominio_palabra_clave` | `dominio_palabra_clave` (+ `alias_de`, `origen`, `activo`, `estado`) |
+| `dominio_senal_alarma` | `dominio_senal_alarma` (+ `alias_de`, `origen`, `activo`, `estado`) |
+| `dominio_pregunta` | `dominio_pregunta` (+ `orden`, `activo`, `estado`) |
+| `dominio_especialidad` / `catalogo_especialidad` | `dominio_especialidad` (nombre normalizado) |
+| `dominio_prueba`, `dominio_asociacion`, `dominio_descartar` | mismas tablas + `orden`, `activo`, `estado` |
+| Conocimiento aprendido en JSON | `dominio_ejemplo` y `dominio_palabra_clave` con `origen = 'aprendido'` |
+| Versión de conocimiento implícita | `kb_version` + `kb_version_item` (snapshot y hash) |
+| Sesión de chat como caso | `sesiones` (chat) + `consulta` / `turno` (caso clínico) |
+
 
 ## 3.3 Diagrama A: base de conocimiento curada (modelo normalizado)
 

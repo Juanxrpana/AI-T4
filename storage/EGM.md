@@ -2,71 +2,106 @@
 
 ## Overview
 
-`storage` guarda el estado operativo del componente en SQLite mediante `aiosqlite`: sesiones, mensajes, memoria por usuario/paciente y auditoría append-only. No es la base clínica y no sustituye a MariaDB. El archivo por defecto es `storage/midi.db`, configurable con `SQLITE_PATH`.
+`storage` guarda todo el estado operativo del componente en SQLite mediante `aiosqlite`: base de conocimiento por tipo, sesiones, identidad `consulta`/`turno`, evidencia, validación, propuestas, memoria y auditoría con outbox. No es la base clínica y no abre MariaDB.
 
-`storage/db.py` crea el directorio padre de `DB_PATH` al importarse; el archivo SQLite se crea al conectar o al ejecutar `init_db()` desde el `lifespan` de FastAPI.
+El archivo por defecto es `storage/midi.db`, configurable con `SQLITE_PATH`. La conexión activa FKs, WAL y `busy_timeout`; el arranque ejecuta `schema.sql` y las migraciones de `storage/migrations/` y es fail-closed si la KB queda vacía.
 
 ## Interface
 
 ### `storage/db.py`
 
 - `DB_PATH`: `Path(settings.SQLITE_PATH)`.
-- `SCHEMA`: DDL de `sesiones`, `mensajes`, `auditoria` y `memorias`; incluye `idx_mensajes_sesion`.
-- `init_db()`: ejecuta `SCHEMA` y migra bases antiguas agregando `memorias.embedding` si falta.
+- `SCHEMA`: DDL base de `sesiones`, `mensajes`, `auditoria` y `memorias`.
+- `conectar()`: abre `aiosqlite` con `foreign_keys=ON`, `journal_mode=WAL`, `busy_timeout=5000` y `row_factory`.
+- `unidad_de_trabajo()`: context manager con `BEGIN IMMEDIATE`, commit y rollback.
+- `migrar(db)`: aplica `storage/migrations/*.sql` en orden y valida checksums.
+- `init_db()`: crea esquema, asegura columnas aditivas, migra, siembra la KB si está vacía y valida que existan dominios con preguntas.
+
+### `storage/schema.sql`
+
+Tablas de KB e identidad: `dominio`, `dominio_palabra_clave`, `dominio_senal_alarma`, `dominio_pregunta`, `dominio_especialidad`, `dominio_prueba`, `dominio_asociacion`, `dominio_descartar`, `dominio_ejemplo`, `kb_version`, `kb_version_item`, `consulta`, `turno` y `schema_migrations`.
+
+### `storage/migrations/`
+
+- `001_evidencia_y_outbox.sql`: `evidencia_turno`, `evidencia_componente`, `turno_dominio_candidato`, `validacion`, `validacion_evento`, `auditoria_outbox` e índice único de auditoría.
+- `002_validaciones_propuestas.sql`: `acceso_caso` y `propuesta_conocimiento`.
+- `003_normalizacion_operativa.sql`: `sesion_estado`, `memoria_dato`, `memoria_embedding`, `auditoria_respuesta`, backfill y triggers.
+
+### `storage/conocimiento.py`
+
+- `snapshot_sincrono(recargar=False)`: KB activa con la forma del antiguo `dominios.json`.
+- `invalidar_cache()`, `id_dominio(clave)`.
+- `listar_aprendido()`: palabras/ejemplos con `origen = 'aprendido'`.
+- `agregar_ejemplo(dominio, frase)`, `agregar_palabra(dominio, palabra)`.
+- `publicar_version(descripcion, autor)`: crea o reactiva una `kb_version` con snapshot e ítems.
+
+### `storage/seed_kb.py`
+
+- `sembrar_si_vacio(con)`: siembra solo si `dominio` está vacío.
+- `sembrar(con)`: lee `knowledge/dominios.json` y `knowledge/aprendido.json`, separa canónicos/alias, inserta por tipo y publica la versión inicial.
 
 ### `storage/sesiones.py`
 
-- `obtener_sesion(session_id)`: devuelve `session_id`, `id_usuario` y `estado` deserializado; `None` si no existe.
-- `crear_sesion(session_id, id_usuario, estado=None)`: `INSERT` con `ON CONFLICT` que conserva `id_usuario` anterior si el nuevo es nulo.
-- `guardar_estado(session_id, estado)`: `UPDATE` de `estado_json` y `actualizada_en`; no crea la sesión si no existe.
-- `agregar_mensaje(session_id, rol, texto)`: inserta un mensaje con fecha UTC.
-- `listar_mensajes(session_id, limite=50)`: últimos `limite` mensajes, devueltos en orden cronológico.
-- `historial_para_gemini(session_id, limite=12)`: adapta los mensajes a `{"role", "text"}`.
-- `borrar_sesion(session_id)`: elimina mensajes y sesión; no toca auditoría.
+- `obtener_sesion`, `crear_sesion`, `guardar_estado`.
+- `agregar_mensaje`, `listar_mensajes`, `historial_para_gemini`, `borrar_sesion`.
+- `obtener_o_crear_consulta`, `obtener_turno_por_peticion`, `crear_turno`, `actualizar_turno`, `actualizar_consulta`, `cerrar_consulta`.
+- `PeticionIdConflicto`: evita reutilizar una clave en otra consulta/sesión.
 
-### `storage/memoria.py`
+### `storage/evidencia.py`
 
-- `guardar(id_usuario, id_paciente, resumen, datos=None)`: `UPSERT` por `(id_usuario, id_paciente)`; normaliza paciente nulo a `""`.
-- `obtener(id_usuario, id_paciente)`: devuelve resumen, datos y embedding deserializados; `None` si no existe.
-- `actualizar_embedding(id_usuario, id_paciente, embedding)`: actualiza solo el vector; no hace nada si el vector viene vacío.
-- `buscar_similares(id_usuario, vector, k=5)`: carga las memorias con embedding del usuario y las ordena por similitud coseno en Python.
-- `borrar(id_usuario, id_paciente=None)`: borra la memoria de un paciente o todas las del usuario.
+- `hash_json`, `hash_texto`, `estimar_confianza`.
+- `guardar_evidencia(db, ...)`: inserta evidencia, componentes y candidatos; usa la conexión de la UoW.
+- `crear_validacion(db, ...)`: crea el caso y su evento inicial.
+- `listar_por_turno(turno_id)`.
+
+### `storage/validaciones.py`
+
+- `listar`, `detalle`, `tomar`, `decidir`, `visto`, `liberar_expiradas`.
+- Excepciones `ValidacionNoEncontrada`, `ConflictoValidacion`, `MotivoRequerido`.
+
+### `storage/propuestas.py`
+
+- `crear`, `listar`, `aprobar`, `rechazar`.
+- Excepciones `PropuestaNoEncontrada`, `ConflictoPropuesta`, `Autoaprobacion`.
 
 ### `storage/auditoria.py`
 
-- `CAMPOS`: columnas auditables (`session_id`, usuario, paciente, dominio, consulta, tipo, especialidad, pruebas, modelo, latencia, tools y JSON de respuesta).
-- `registrar(evento)`: inserta una fila; serializa listas y diccionarios a JSON.
-- `listar(limite=50)`: devuelve las últimas filas; acota `limite` entre 1 y 500.
+- `registrar(evento, db=None, idempotency_key=None)`: con `db` escribe en `auditoria_outbox`; sin `db` escribe directo.
+- `relay_auditoria(limite=100)`: mueve outbox a `auditoria` con `INSERT OR IGNORE`.
+- `listar(limite=50)`.
 
-### `storage/__init__.py`
+### `storage/memoria.py`
 
-- Expone `init_db` y `DB_PATH`. `main.py` importa los submódulos `sesiones`, `memoria` y `auditoria` directamente (`from storage import auditoria, memoria, sesiones`).
+- `guardar`, `obtener`, `actualizar_embedding`, `buscar_similares`, `borrar`.
+
+### `storage/normalizacion.py`
+
+- `leer_estado`, `leer_datos_memoria`, `leer_embedding`, `leer_respuesta`: lectores de las tablas sombra.
 
 ## Invariants
 
-- **SQLite local.** El archivo vive en `settings.SQLITE_PATH` (`storage/midi.db` por defecto). No hay conexión a MariaDB.
-- **Sin claves foráneas declaradas.** `mensajes`, `auditoria` y `memorias` se relacionan por valor; la integridad la sostiene la aplicación.
-- **`guardar_estado` no crea sesiones.** Solo actualiza una fila existente. El flujo de `main.py` crea la sesión antes de procesar.
-- **Sesión y mensajes.** Borrar una sesión elimina sus mensajes en la misma operación; la auditoría se conserva.
-- **Historial acotado.** `historial_para_gemini` devuelve como máximo el límite solicitado (12 por defecto) y en orden cronológico.
-- **Memoria única.** `memorias` tiene `UNIQUE (id_usuario, id_paciente)`. Un paciente nulo se guarda como cadena vacía.
-- **Embedding opcional.** `embedding` puede ser `NULL`; `buscar_similares` ignora las filas sin vector. El cálculo se hace en segundo plano desde `main.py`.
-- **Auditoría append-only.** La API solo expone `GET /auditoria`; no hay endpoint de actualización ni de borrado. `registrar` no verifica duplicados.
-- **JSON serializado.** `estado_json`, `datos_json`, `embedding`, `pruebas_sugeridas` y `json_respuesta` se guardan como texto JSON; los lectores toleran JSON inválido devolviendo valores vacíos.
-- **Fechas UTC.** Todas las fechas se generan con `datetime.now(timezone.utc).isoformat()`.
-- **Sin control de roles.** `storage` no autoriza; la autorización depende de la API key y de los headers del proxy.
-- **Base creada al conectar.** `storage/db.py` crea el directorio de `DB_PATH` al importarse; el archivo se crea al abrir la primera conexión o al ejecutar `init_db()`.
+- **SQLite local.** No hay conexión a MariaDB ni escritura en la base clínica.
+- **FK y WAL.** `conectar()` activa FKs, WAL y `busy_timeout`; las pruebas y la verificación de migración comprueban `foreign_key_check`.
+- **UoW del turno.** Evidencia, mensaje, validación, cierre y outbox se escriben en una sola transacción; un fallo revierte todo y el endpoint responde `503`.
+- **Una evidencia por turno.** `evidencia_turno.turno_id` es `UNIQUE`.
+- **Idempotencia.** `turno.peticion_id` es único; una respuesta previa se guarda en `turno.respuesta_json` y se reproduce.
+- **Auditoría outbox.** `auditoria.idempotency_key` es único; el relay es reintentable y no duplica filas.
+- **Validación.** El lease es de 48 h; solo se retoma si está `pendiente` o `asignada` vencida; las decisiones usan versión optimista.
+- **Propuestas.** No hay autoaprobación; aprobar publica una `kb_version`.
+- **KB sembrada.** `init_db` falla si no hay dominios con preguntas aprobadas.
+- **JSON de compatibilidad.** Las columnas JSON siguen siendo el contrato; las tablas normalizadas se mantienen por triggers.
+- **Fechas UTC.** Se generan con `datetime.now(timezone.utc).isoformat()`.
 
 ## Side Effects
 
-- Creación del directorio y del archivo SQLite si no existen.
-- Lectura y escritura de `sesiones`, `mensajes`, `memorias` y `auditoria`.
-- Migración automática de `memorias.embedding` en bases antiguas.
-- Sin escritura en MySQL, sin archivos clínicos y sin llamadas HTTP.
-- Los datos pueden contener información clínica; la política de retención y borrado queda fuera de este módulo.
+- Creación del directorio y archivo SQLite.
+- Ejecución de migraciones y triggers.
+- Escritura/lectura de KB, sesiones, consultas, turnos, evidencia, validación, propuestas, memoria, auditoría y outbox.
+- WAL y archivos `-wal`/`-shm` de SQLite.
+- Sin llamadas HTTP, sin MySQL y sin archivos clínicos fuera de SQLite.
 
 ## Verification
 
-- Run: `pytest`
-- Pruebas relacionadas: `tests/test_memoria.py`, `tests/test_api.py` y `tests/conftest.py`.
-- Nota: las pruebas usan una base temporal o el `SQLITE_PATH` configurado; verificar que no apunten a datos reales.
+- Run: `python -m pytest -q`
+- Pruebas específicas: `tests/test_migracion_kb.py`, `tests/test_identidad.py`, `tests/test_evidencia_turno.py`, `tests/test_transaccion.py`, `tests/test_validaciones.py`, `tests/test_propuestas.py`, `tests/test_normalizacion_operativa.py`.
+- Migración: probar sobre una copia de `storage/midi.db`; `PRAGMA foreign_key_check` debe devolver `[]`.

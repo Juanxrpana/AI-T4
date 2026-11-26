@@ -2,94 +2,88 @@
 
 ## Overview
 
-`ai` concentra la lógica que decide qué preguntar, cómo detectar un dominio, cómo aprender frases y cómo redactar la orientación. No escribe en la base clínica. La única persistencia propia es `knowledge/aprendido.json`; el estado de la conversación lo manejan `main.py` y `storage/`.
+`ai` concentra la lógica que decide qué preguntar, cómo detectar un dominio, cómo evaluar evidencia y confianza, cómo aprender frases y cómo redactar la orientación. No escribe en la base clínica ni abre MariaDB.
 
 La inteligencia es híbrida:
 
-- **Simbólica:** `ai/cuestionario.py` usa palabras clave, señales de alarma y una máquina de estados.
-- **Estadística:** `ai/embeddings.py` calcula similitud coseno para la memoria vectorizada.
-- **Generativa:** `ai/gemini.py` y `ai/openai_compatible.py` redactan la orientación y ejecutan herramientas de solo lectura.
+- **Simbólica:** `cuestionario.py` usa la KB activa, palabras clave, señales de alarma y una máquina de estados.
+- **Estadística:** `embeddings.py` calcula similitud coseno para la memoria vectorizada.
+- **Calibrada:** `confianza.py` pondera seis componentes para decidir si un caso va a revisión.
+
+La KB curada vive en SQLite. `knowledge/dominios.json` y `knowledge/aprendido.json` son solo semilla de migración y respaldo de arranque.
 
 ## Interface
 
+### `ai/cuestionario.py`
+
+- `dominios()`: snapshot de la KB activa desde `storage.conocimiento.snapshot_sincrono()`.
+- `detectar_candidatos(texto, limite=3)`: ranking de dominios por keyword positiva o similitud de ejemplo.
+- `detectar_dominio(texto)`: primer candidato con `score >= 0.60`.
+- `hay_alarma(texto, dominio)`: delega en `evidencia.hay_alarma` con las señales del dominio.
+- `nueva_sesion(dominio, motivo)`, `proxima_pregunta(estado)`, `registrar_respuesta(estado, texto)`, `es_suficiente(estado)`, `progreso(estado)`.
+- `especialidad_candidata(estado, catalogo)`: primera especialidad del dominio presente en el catálogo; fallback a `CONSULTA GENERAL`.
+- `construir_ficha(estado, contexto, catalogo, recuerdos=None)`: prompt clínico de cierre.
+- `aprender_ejemplo(dominio, frase)` y `aprender_palabras(dominio, palabras)`: escriben en SQLite vía `storage.conocimiento`; no se llaman automáticamente desde `/orientar`.
+- `listar_aprendido()`: elementos con `origen = 'aprendido'`.
+
+### `ai/evidencia.py`
+
+- `normalizar(texto)`: NFD, minúsculas, sin acentos.
+- `tokenizar(texto)`, `tokens(texto)`, `similitud(a, b)`.
+- `detectar_evidencia(texto, terminos, ventana=8)`: coincidencias con polaridad y offsets; la negación se corta en `pero/aunque/sino/embargo` y en `, ; .`.
+- `coincide(texto, terminos)`, `hay_alarma(texto, terminos)`, `contar_negaciones(texto)`.
+
+### `ai/confianza.py`
+
+- `PESOS`: `coincidencia_keyword` 0.35, `similitud_ejemplo` 0.20, `margen_top1_top2` 0.20, `num_candidatos` 0.10, `preguntas_respondidas` 0.10, `penalizacion_negacion` 0.05.
+- `componentes(...)`, `calcular(componentes)`, `margen(top1, top2)`, `banda(confianza)`.
+- `evaluar(...)`: devuelve `(revisar, motivo)`; `aclaracion` nunca revisa.
+- `es_muestra(turno_id)`: 5 % determinista por SHA-256.
+
+### `ai/embeddings.py`
+
+- `embed(texto)`: embedding Gemini opcional; devuelve `None` si no hay cliente o falla.
+- `coseno(a, b)`: similitud coseno.
+
 ### Proveedores
 
-- `ai/base.py:ProveedorIA`: interfaz abstracta con `nombre_modelo`, `precargar_catalogo()` y `orientar(consulta, historial) -> dict`.
-- `ai/proveedores.py:crear_proveedor()`: construye el proveedor principal según `PROVEEDOR_IA` y envuelve la cadena `PROVEEDORES_FALLBACK` en `ProveedorFallback`.
-- `ai/proveedores.py:construir(nombre)`: acepta `gemini`, `opencode`, `groq`, `openai` y `custom`.
-- `ai/proveedores.py:ProveedorFallback`: prueba proveedores en orden; guarda el último que respondió en `ultimo`; si todos fallan lanza `RuntimeError`.
-- `ai/gemini.py:ProveedorGemini`: lee `guia.md` al construirse, inyecta el catálogo cacheado, usa `thinking_budget=0`, desactiva el *automatic function calling* y ejecuta hasta 4 iteraciones de herramientas.
-- `ai/openai_compatible.py:ConfigProveedor`: configuración de cualquier endpoint compatible con OpenAI.
-- `ai/openai_compatible.py:ProveedorOpenAICompatible`: usa `esquema_tool()` para convertir las funciones de `tools/clinica.py`; si el endpoint rechaza `response_format`, `temperature` o `tools`, los quita y reintenta; si no obtiene JSON válido, fuerza una llamada final sin herramientas.
-- `ai/openai_compatible.py:mensajes_openai()`: convierte el historial de Gemini (`model`) al rol `assistant` de OpenAI.
+- `base.ProveedorIA`: interfaz abstracta.
+- `gemini.ProveedorGemini`, `openai_compatible.ProveedorOpenAICompatible`.
+- `proveedores.ProveedorFallback`, `construir(nombre)`, `crear_proveedor()`.
+- `ai/__init__.py` reexporta proveedores y `ConfigProveedor`.
 
-### Cuestionario y aprendizaje
+### `ai/comun.py`
 
-- `ai/cuestionario.py:dominios()`: fusiona `knowledge/dominios.json` con `knowledge/aprendido.json` y cachea el resultado en `_dominios_cache`.
-- `ai/cuestionario.py:detectar_dominio(texto)`: coincidencia exacta de palabra clave o similitud Jaccard ≥ 0,6 con un ejemplo aprendido.
-- `ai/cuestionario.py:aprender_ejemplo(dominio, frase)`: guarda una frase real; máximo 50 por dominio; deduplica por texto normalizado.
-- `ai/cuestionario.py:aprender_palabras(dominio, palabras)`: agrega palabras clave manuales; deduplica.
-- `ai/cuestionario.py:listar_aprendido()`: devuelve el contenido crudo de `aprendido.json`.
-- `ai/cuestionario.py:nueva_sesion(dominio, motivo)`: crea la ficha del cuestionario.
-- `ai/cuestionario.py:hay_alarma(texto, dominio)`: busca señales de alarma del dominio como subcadena normalizada.
-- `ai/cuestionario.py:proxima_pregunta(estado)`: devuelve la primera pregunta no respondida; `None` al llegar a `max_preguntas`.
-- `ai/cuestionario.py:registrar_respuesta(estado, texto)`: registra la respuesta de `estado["siguiente_pregunta"]` y la marca como hecha.
-- `ai/cuestionario.py:es_suficiente(estado)`: verdadero al alcanzar `min_preguntas`.
-- `ai/cuestionario.py:progreso(estado)`: porcentaje basado en `min_preguntas`.
-- `ai/cuestionario.py:especialidad_candidata(estado, catalogo)`: primera especialidad configurada que exista en el catálogo; si ninguna existe, intenta `CONSULTA GENERAL`; si tampoco está, devuelve `None`.
-- `ai/cuestionario.py:resumen_contexto(contexto)`: resume patologías y los últimos 5 controles.
-- `ai/cuestionario.py:construir_ficha(estado, contexto, catalogo, recuerdos)`: texto que recibe el proveedor para la orientación final.
+- `leer_guia()`, `system_prompt(guia)`, `construir_accion(r)`, `validar_respuesta(r)`, `limpiar_json(texto)`.
 
-### Esquema y prompt
+### `ai/schemas.py`
 
-- `ai/schemas.py:RespuestaOrientacion`: tipos `emergencia`, `orientacion`, `catalogo`, `aclaracion`, `derivar`, `datos`, `navegacion` y `registro_paciente`; campos de especialidad, listas clínicas, progreso, borrador de paciente y `accion_sugerida`.
-- `ai/schemas.py:AccionSugerida`: etiqueta, ruta y visibilidad del botón.
-- `ai/comun.py:leer_guia()`: lee `guia.md`.
-- `ai/comun.py:system_prompt(guia)`: guía + catálogo cacheado + instrucciones de tools, datos propios, registro de paciente y navegación.
-- `ai/comun.py:construir_accion(r)`: construye el botón; no lo decide el modelo.
-- `ai/comun.py:validar_respuesta(r)`: vacía la especialidad en tipos que no la admiten, descarta módulos inválidos y degrada a `catalogo` si la especialidad no existe.
-- `ai/comun.py:limpiar_json(texto)`: quita bloques Markdown.
-- `ai/embeddings.py:embed(texto)`: vector de `EMBEDDING_MODEL` o `None` si falla.
-- `ai/embeddings.py:coseno(a, b)`: similitud coseno.
-
-### Datos que consume
-
-- `knowledge/dominios.json`: conocimiento curado (dominios, preguntas, palabras, alarmas, especialidades, pruebas, asociaciones y hallazgos).
-- `knowledge/aprendido.json`: ejemplos y palabras aprendidas en runtime.
-- `guia.md`: prompt del sistema.
-- Catálogo de especialidades: se obtiene de `tools/php_client.py`, no de `ai`.
+- `AccionSugerida`: etiqueta, ruta y visibilidad.
+- `RespuestaOrientacion`: tipo, mensaje, especialidad, listas clínicas, módulo, acción y campos de paciente.
 
 ## Invariants
 
-- **Detección determinista.** `detectar_dominio` recorre los dominios en el orden del JSON. La primera palabra clave que coincide gana. Si no hay coincidencia exacta, solo acepta un ejemplo aprendido con similitud ≥ 0,6.
-- **Caché de dominios.** `dominios()` no relee los JSON en cada llamada. Solo `aprender_ejemplo` y `aprender_palabras` invalidan `_dominios_cache`; una edición manual de `dominios.json` requiere reiniciar el proceso o invalidar la caché.
-- **Ficha de sesión.** `nueva_sesion` devuelve `dominio`, `motivo`, `paciente_id`, `paciente_cedula`, `paciente_nombre`, `preguntas_hechas`, `respuestas`, `siguiente_pregunta`, `contexto`, `contexto_cargado` y `completo`.
-- **Una respuesta por turno.** `registrar_respuesta` no hace nada si `siguiente_pregunta` está vacío. `main.py` limpia `siguiente_pregunta` después de registrar.
-- **Cierre por mínimo o máximo.** `es_suficiente` cierra al llegar a `min_preguntas`; `proxima_pregunta` devuelve `None` al llegar a `max_preguntas`. El flujo de `main.py` puede finalizar por cualquiera de las dos condiciones.
-- **Alarma prevalece.** `hay_alarma` se evalúa sobre el motivo y todas las respuestas; una coincidencia produce `emergencia` y no se hacen más preguntas.
-- **Especialidad candidata.** `especialidad_candidata` recorre `dominio["especialidades"]` en orden y devuelve la primera que exista en el catálogo. Si ninguna coincide, intenta `CONSULTA GENERAL`; si tampoco está, devuelve `None`. No hay una marca explícita de «último recurso»: la posición en la lista es la única prioridad.
-- **Aprendizaje automático.** `main.py` llama a `aprender_ejemplo` cada vez que detecta un dominio nuevo. `ai/cuestionario.py` no decide por sí solo aprender; solo escribe cuando se le invoca.
-- **Límite de ejemplos.** `aprender_ejemplo` conserva los últimos 50 ejemplos por dominio y deduplica por texto normalizado sin tildes ni mayúsculas.
-- **Sin borrado de aprendizaje.** No existe función para eliminar un ejemplo o una palabra aprendida; `POST /conocimiento` solo agrega.
-- **Validación de salida.** `validar_respuesta` vacía `especialidad_sugerida` en `emergencia`, `catalogo`, `datos`, `navegacion` y `registro_paciente`; si la especialidad no está en el catálogo, cambia el tipo a `catalogo` y devuelve las opciones reales.
-- **Dos validaciones.** `ProveedorGemini._con_modelo` duplica las comprobaciones de especialidad y navegación en lugar de llamar a `ai/comun.py:validar_respuesta`; `ProveedorOpenAICompatible` sí usa la función compartida. Cualquier cambio de guardrails debe aplicarse en ambos sitios.
-- **Prompt cacheado.** Ambos proveedores leen `guia.md` al construirse. Un cambio en la guía requiere reiniciar el servicio.
-- **Acción en Python.** `accion_sugerida` se construye con `_construir_accion` o `comun.construir_accion`; el modelo no decide la ruta ni el botón.
-- **Borrador de paciente.** `RespuestaOrientacion.paciente_borrador` permite devolver datos para que PHP confirme el alta; `ai` no escribe pacientes.
+- **KB desde SQLite.** `cuestionario.dominios()` no lee JSON en runtime; si la base no tiene KB, usa el JSON solo como respaldo de arranque.
+- **Detección determinista.** La negación es por cláusula; dos marcadores (doble negación) no niegan. El umbral de ejemplo es `0.60`.
+- **Candidatos estables.** `detectar_candidatos` ordena por score y conserva el orden de la KB en empates.
+- **Sin aprendizaje implícito.** `main._procesar` ya no llama a `aprender_ejemplo`; las frases nuevas entran como propuestas. Las funciones `aprender_*` quedan para uso explícito/compatibilidad y escriben SQLite.
+- **Confianza no gating.** La confianza no cambia `tipo_respuesta` ni la especialidad; solo decide revisión.
+- **Pesos fijos.** Los seis pesos suman 1.0; `calcular` acota el resultado a 0..1.
+- **Muestra determinista.** `es_muestra` depende solo de `turno_id`, no de aleatoriedad del proceso.
+- **Proveedor con respaldo.** `crear_proveedor` construye el principal y, si está configurado, la cadena de fallback; un fallback mal configurado se omite con log.
+- **Sin MariaDB.** `ai` no importa ni abre MySQL; la única persistencia es SQLite a través de `storage`.
+- **Embeddings opcionales.** Si Gemini no responde, la memoria sigue funcionando sin vector.
 
 ## Side Effects
 
-- Peticiones HTTP GET al sistema PHP a través de `tools/php_client.py` (catálogo y herramientas).
-- Peticiones HTTP a los proveedores de IA configurados.
-- Escritura de `knowledge/aprendido.json` en `aprender_ejemplo` y `aprender_palabras`.
-- Lectura de `guia.md`, `knowledge/dominios.json` y `knowledge/aprendido.json`.
-- Logs de errores, herramientas y diagnósticos.
-- Si `IA_DEBUG=true`, escritura de payloads crudos en `IA_DEBUG_DIR` (`storage/debug_ia` por defecto).
-- Sin escritura directa en SQLite; `main.py` y `storage/` son los dueños de esa persistencia.
-- Sin escritura en MySQL ni en la historia clínica.
+- Llamadas HTTP a proveedores de IA y a Gemini para embeddings.
+- Lectura/escritura de SQLite vía `storage.conocimiento` cuando se usan funciones de aprendizaje.
+- Caché de la KB en `storage.conocimiento` y cliente de embeddings en `ai.embeddings`.
+- Logs de errores de proveedor y de embeddings.
+- Sin escritura en MySQL, sin archivos clínicos y sin correo.
 
 ## Verification
 
-- Run: `pytest`
-- Pruebas relacionadas: `tests/test_aprendizaje.py`, `tests/test_gemini_fallback.py`, `tests/test_proveedores.py`, `tests/test_tools.py`.
-- Nota: las pruebas de integración requieren `.env`, claves de proveedor y PHP disponible. No ejecutar contra producción sin una copia controlada.
+- Run: `python -m pytest -q`
+- Pruebas específicas: `tests/test_evidencia_engine.py`, `tests/test_alarma.py`, `tests/test_confianza.py`, `tests/test_aprendizaje.py`, `tests/test_proveedores.py`.
+- Nota: las pruebas de proveedores usan dobles; no requieren una clave real de Gemini.

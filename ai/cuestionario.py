@@ -1,144 +1,80 @@
-"""Motor del cuestionario guiado (híbrido, determinista) + aprendizaje.
+"""Motor del cuestionario guiado (híbrido, determinista).
 
 Las reglas de este módulo deciden **qué preguntar y cuándo terminar**. Gemini
 solo se usa al final para redactar la orientación. La base de conocimiento
-curada vive en `knowledge/dominios.json`; lo aprendido en conversaciones se
-guarda aparte en `knowledge/aprendido.json` y se fusiona al cargar.
+curada vive en SQLite (`storage/conocimiento.py`); los JSON de `knowledge/`
+son solo semilla de migración.
 
 Aprendizaje:
-- Cada vez que se inicia un dominio, se guarda la frase del usuario como
-  `ejemplo`. En el futuro, frases parecidas se reconocen por similitud de
-  tokens aunque no contengan una palabra clave exacta.
-- También se pueden añadir palabras clave manualmente (API `/conocimiento`).
+- Los ejemplos y palabras que se añaden desde `/conocimiento` se guardan en
+  SQLite con `origen = 'aprendido'`. La ruta automática de aprendizaje se
+  retiró: en Fase 3 todo cambio pasa por propuestas revisables.
+- Las frases parecidas se reconocen por similitud de tokens aunque no
+  contengan una palabra clave exacta.
 """
 
-import json
-import re
-import unicodedata
-from pathlib import Path
+import ai.evidencia as evidencia
+from storage import conocimiento
 
-from config import settings
-
-_RUTA = Path("knowledge/dominios.json")
-_RUTA_APRENDIDO = Path(settings.APRENDIZAJE_PATH)
-_dominios_cache: dict | None = None
-
-# Palabras que no aportan al comparar frases.
-_VACIAS = {
-    "de", "la", "el", "en", "con", "que", "por", "para", "los", "las", "un",
-    "una", "unos", "unas", "y", "o", "mi", "me", "se", "al", "del", "es",
-    "son", "tengo", "tiene", "como", "desde", "esta", "este", "hace", "dias",
-    "día", "hola", "problema", "mucho", "poco", "muy", "solo", "sólo",
-    "tambien", "también", "pero", "porque", "cuando", "donde", "dónde",
-}
+# Alias de compatibilidad: la implementación vive en ai.evidencia.
+_VACIAS = evidencia.VACIAS
 
 
 def _normalizar(texto: str) -> str:
-    texto = unicodedata.normalize("NFD", (texto or "").lower())
-    return "".join(c for c in texto if unicodedata.category(c) != "Mn")
-
-
-def _leer_aprendido() -> dict:
-    try:
-        if _RUTA_APRENDIDO.exists():
-            datos = json.loads(_RUTA_APRENDIDO.read_text(encoding="utf-8"))
-            return datos if isinstance(datos, dict) else {}
-    except (OSError, ValueError):
-        pass
-    return {}
-
-
-def _escribir_aprendido(datos: dict) -> None:
-    _RUTA_APRENDIDO.parent.mkdir(parents=True, exist_ok=True)
-    _RUTA_APRENDIDO.write_text(
-        json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
-def _invalidar_cache() -> None:
-    global _dominios_cache
-    _dominios_cache = None
+    return evidencia.normalizar(texto)
 
 
 def dominios() -> dict:
-    """Base curada + conocimiento aprendido (sin mutar el JSON base)."""
-    global _dominios_cache
-    if _dominios_cache is not None:
-        return _dominios_cache
-
-    base = json.loads(_RUTA.read_text(encoding="utf-8"))
-    aprendido = _leer_aprendido()
-
-    for clave, extra in aprendido.items():
-        if clave not in base:
-            continue
-        actual = base[clave]
-        palabras = list(actual.get("palabras_clave", []))
-        for palabra in extra.get("palabras_clave", []):
-            if palabra not in palabras:
-                palabras.append(palabra)
-        actual["palabras_clave"] = palabras
-        actual["ejemplos"] = list(extra.get("ejemplos", []))
-
-    _dominios_cache = base
-    return _dominios_cache
+    """Snapshot de la KB activa en SQLite (con respaldo JSON al arrancar)."""
+    return conocimiento.snapshot_sincrono()
 
 
 def _tokens(texto: str) -> set[str]:
-    plano = _normalizar(texto)
-    return {
-        t for t in re.findall(r"[a-z0-9]+", plano)
-        if len(t) >= 4 and t not in _VACIAS
-    }
+    return evidencia.tokens(texto)
 
 
 def _similitud(a: str, b: str) -> float:
-    ta, tb = _tokens(a), _tokens(b)
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
+    return evidencia.similitud(a, b)
+
+
+_UMBRAL_EJEMPLO = 0.60
+
+
+def detectar_candidatos(texto: str, limite: int = 3) -> list[dict]:
+    """Ranking de dominios por palabra clave positiva o ejemplo parecido."""
+    resultados: list[dict] = []
+    for clave, cfg in dominios().items():
+        if evidencia.coincide(texto, cfg.get("palabras_clave", [])):
+            score = 1.0
+        else:
+            score = max(
+                (_similitud(texto, ejemplo) for ejemplo in cfg.get("ejemplos", [])),
+                default=0.0,
+            )
+        if score > 0:
+            resultados.append({
+                "dominio": clave,
+                "dominio_id": cfg.get("_id"),
+                "score": round(score, 4),
+            })
+
+    resultados.sort(key=lambda r: r["score"], reverse=True)
+    return resultados[:limite]
 
 
 def detectar_dominio(texto: str) -> str | None:
-    """Palabra clave exacta o frase parecida a un ejemplo aprendido."""
-    plano = _normalizar(texto)
-
-    for clave, cfg in dominios().items():
-        for palabra in cfg.get("palabras_clave", []):
-            if _normalizar(palabra) in plano:
-                return clave
-
-    mejor_clave, mejor_puntaje = None, 0.0
-    for clave, cfg in dominios().items():
-        for ejemplo in cfg.get("ejemplos", []):
-            puntaje = _similitud(texto, ejemplo)
-            if puntaje > mejor_puntaje:
-                mejor_clave, mejor_puntaje = clave, puntaje
-
-    return mejor_clave if mejor_puntaje >= 0.6 else None
+    """Primer candidato que supera el umbral de ejemplo o tiene keyword."""
+    for candidato in detectar_candidatos(texto):
+        if candidato["score"] >= _UMBRAL_EJEMPLO:
+            return candidato["dominio"]
+    return None
 
 
 def aprender_ejemplo(dominio: str, frase: str) -> bool:
-    """Guarda una frase real del usuario como ejemplo del dominio."""
+    """Guarda una frase real del usuario como ejemplo aprendido del dominio."""
     if dominio not in dominios():
         return False
-
-    frase = (frase or "").strip()
-    if len(frase) < 3:
-        return False
-
-    aprendido = _leer_aprendido()
-    entrada = aprendido.setdefault(dominio, {"palabras_clave": [], "ejemplos": []})
-    ejemplos = entrada.setdefault("ejemplos", [])
-
-    normalizadas = {_normalizar(e) for e in ejemplos}
-    if _normalizar(frase) not in normalizadas:
-        ejemplos.append(frase)
-        entrada["ejemplos"] = ejemplos[-50:]
-
-    _escribir_aprendido(aprendido)
-    _invalidar_cache()
-    return True
+    return conocimiento.agregar_ejemplo(dominio, frase)
 
 
 def aprender_palabras(dominio: str, palabras: list[str]) -> bool:
@@ -146,27 +82,15 @@ def aprender_palabras(dominio: str, palabras: list[str]) -> bool:
     if dominio not in dominios():
         return False
 
-    aprendido = _leer_aprendido()
-    entrada = aprendido.setdefault(dominio, {"palabras_clave": [], "ejemplos": []})
-    claves = entrada.setdefault("palabras_clave", [])
-    existentes = {_normalizar(p) for p in claves}
-
     agregado = False
     for palabra in palabras or []:
-        palabra = (palabra or "").strip()
-        if palabra and _normalizar(palabra) not in existentes:
-            claves.append(palabra)
-            existentes.add(_normalizar(palabra))
+        if conocimiento.agregar_palabra(dominio, palabra):
             agregado = True
-
-    if agregado:
-        _escribir_aprendido(aprendido)
-        _invalidar_cache()
     return agregado
 
 
 def listar_aprendido() -> dict:
-    return _leer_aprendido()
+    return conocimiento.listar_aprendido()
 
 
 def nueva_sesion(dominio: str, motivo: str) -> dict:
@@ -187,8 +111,7 @@ def nueva_sesion(dominio: str, motivo: str) -> dict:
 
 def hay_alarma(texto: str, dominio: str) -> bool:
     cfg = dominios().get(dominio, {})
-    plano = _normalizar(texto)
-    return any(_normalizar(p) in plano for p in cfg.get("senal_alarma", []))
+    return evidencia.hay_alarma(texto, cfg.get("senal_alarma", []))
 
 
 def proxima_pregunta(estado: dict) -> dict | None:

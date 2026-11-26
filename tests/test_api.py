@@ -339,7 +339,32 @@ def test_conocimiento_aprende_y_lista(monkeypatch):
         )
         assert r.status_code == 200
         assert r.json()["ok"] is True
+        assert "pendiente" in r.json()
+        assert isinstance(r.json()["propuestas"], list)
 
         r = c.get("/conocimiento", headers={"X-API-Key": API_KEY})
         assert r.status_code == 200
         assert "lesion_piel" in r.json()
+
+
+def test_orientar_es_idempotente_por_peticion_id(monkeypatch):
+    llamadas = []
+
+    def _orientar(consulta, historial=None):
+        llamadas.append(consulta)
+        return _respuesta_ok()
+
+    with _cliente(monkeypatch, orientar=_orientar) as c:
+        payload = {
+            "consulta": "necesito informacion general sobre una cita",
+            "session_id": "api-idem",
+            "peticion_id": "pet-api-idem",
+        }
+        r1 = c.post("/orientar", json=payload, headers={"X-API-Key": API_KEY})
+        r2 = c.post("/orientar", json=payload, headers={"X-API-Key": API_KEY})
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json()["turno_id"] == r2.json()["turno_id"]
+        assert r2.json().get("idempotente") is True
+        assert len(llamadas) == 1

@@ -1,9 +1,10 @@
 import asyncio
+import json
 import logging
 import re
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -13,11 +14,14 @@ from pydantic import BaseModel, Field
 
 import ai.cuestionario as cuestionario
 import ai.embeddings as embeddings
+import ai.confianza as motor_confianza
+import ai.evidencia as motor_evidencia
 import tools.php_client as php_client
 from ai import crear_proveedor
 from config import settings, ruta_cita_con_especialidad, RUTAS_FRONTEND
 from storage import init_db
-from storage import auditoria, memoria, sesiones
+from storage import auditoria, conocimiento, evidencia, memoria, propuestas, sesiones, validaciones
+from storage.db import conectar as conectar_db, unidad_de_trabajo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +55,22 @@ async def lifespan(app: FastAPI):
         await proveedor.precargar_catalogo()
     except Exception:
         logger.exception("No se pudo precargar el catálogo al arrancar; se reintentará en cada consulta")
-    yield
+
+    async def _relay_periodico():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await auditoria.relay_auditoria()
+            except Exception:
+                logger.exception("Relay periódico de auditoría falló")
+
+    tarea = asyncio.create_task(_relay_periodico())
+    try:
+        yield
+    finally:
+        tarea.cancel()
+        with suppress(asyncio.CancelledError):
+            await tarea
 
 
 app = FastAPI(
@@ -73,12 +92,46 @@ if settings.CORS_ORIGINS.strip():
 class ConsultaIn(BaseModel):
     consulta: str = Field(..., min_length=1, max_length=2000)
     session_id: str | None = None
+    peticion_id: str | None = None
 
 
 class ConocimientoIn(BaseModel):
     dominio: str
     ejemplo: str | None = None
     palabras_clave: list[str] = Field(default_factory=list)
+    capa_error: str = "conocimiento"
+
+
+class DecisionIn(BaseModel):
+    decision: str
+    motivo_codigo: str | None = None
+    comentario: str | None = None
+    version: int | None = None
+
+
+class PropuestaIn(BaseModel):
+    dominio: str
+    tipo: str
+    valor: str
+    clave: str | None = None
+    capa_error: str = "conocimiento"
+
+
+class RechazoIn(BaseModel):
+    motivo: str
+
+
+ROLES_VALIDACION = {"10", "superadmin", "super usuario", "admin"}
+
+
+def _usuario_validacion(request: Request) -> tuple[str, str]:
+    actor = (request.headers.get("X-Usuario-Id") or "").strip()
+    rol = (request.headers.get("X-Usuario-Rol") or "").strip()
+    if not actor:
+        raise HTTPException(400, "Falta X-Usuario-Id")
+    if rol.lower() not in ROLES_VALIDACION:
+        raise HTTPException(403, "Rol no autorizado para validar")
+    return actor, rol
 
 
 def verificar_api_key(x_api_key: str | None) -> None:
@@ -406,12 +459,8 @@ async def _procesar(consulta: str, historial_previo: list[dict], estado: dict, u
         if dominio:
             estado.clear()
             estado.update(cuestionario.nueva_sesion(dominio, consulta))
-            try:
-                # MIDI aprende la frase real del usuario para reconocer
-                # variantes parecidas en futuras conversaciones.
-                cuestionario.aprender_ejemplo(dominio, consulta)
-            except Exception:
-                logger.exception("No se pudo guardar el ejemplo aprendido")
+            # El aprendizaje implícito se retiró: las frases nuevas entran como
+            # propuestas revisables (`POST /conocimiento`), no a la KB activa.
         else:
             return await _flujo_general(consulta, historial_previo, estado)
 
@@ -439,18 +488,61 @@ async def orientar(
         sesion = await sesiones.crear_sesion(session_id, usuario["id"])
     estado = sesion.get("estado") or {}
 
-    historial_previo = await sesiones.historial_para_gemini(session_id, MAX_HISTORIAL)
-    await sesiones.agregar_mensaje(session_id, "user", body.consulta)
+    if body.peticion_id:
+        peticion_id = body.peticion_id
+    else:
+        # Compatibilidad mientras el frontend PHP no envía la clave.
+        peticion_id = str(uuid4())
+        logger.warning("Petición sin peticion_id (session=%s); se generó uno", session_id)
 
-    logger.info(
-        "Consulta (session=%s usuario=%r rol=%r id=%r): %.80s",
-        session_id, usuario["nombre"], usuario["rol"], usuario["id"], body.consulta,
+    turno_previo = None
+    if body.peticion_id:
+        turno_previo = await sesiones.obtener_turno_por_peticion(peticion_id)
+        if turno_previo:
+            if turno_previo["consulta_session_id"] != session_id:
+                raise HTTPException(
+                    409, "peticion_id ya usado en otra sesión"
+                )
+            if turno_previo.get("respuesta_json"):
+                try:
+                    previa = json.loads(turno_previo["respuesta_json"])
+                except ValueError:
+                    previa = None
+                if isinstance(previa, dict):
+                    return {**previa, "idempotente": True}
+
+    if turno_previo:
+        # Reintento tras un cierre: se reutiliza el caso original.
+        consulta = {"id": turno_previo["consulta_id"]}
+    else:
+        consulta = await sesiones.obtener_o_crear_consulta(session_id, usuario["id"])
+
+    try:
+        turno = await sesiones.crear_turno(
+            consulta["id"], peticion_id, body.consulta, "user"
+        )
+    except sesiones.PeticionIdConflicto:
+        raise HTTPException(409, "peticion_id ya usado en otra consulta")
+
+    historial_previo = await sesiones.historial_para_gemini(session_id, MAX_HISTORIAL)
+    mensaje_usuario_id = await sesiones.agregar_mensaje(
+        session_id, "user", body.consulta, consulta["id"], turno["id"]
     )
 
+    logger.info(
+        "Consulta (session=%s consulta=%s turno=%s usuario=%r rol=%r id=%r "
+        "len=%d hash=%s)",
+        session_id, consulta["id"], turno["id"], usuario["nombre"],
+        usuario["rol"], usuario["id"], len(body.consulta),
+        evidencia.hash_texto(body.consulta)[:12],
+    )
+
+    degradado = False
     token_usuario = php_client.usuario_actual.set(usuario["id"])
     try:
         respuesta = await _procesar(body.consulta, historial_previo, estado, usuario)
     except Exception:
+        degradado = True
         logger.exception("Fallo al procesar la consulta (session=%s)", session_id)
         respuesta = {
             "tipo_respuesta": "derivar",
@@ -476,38 +568,171 @@ async def orientar(
     finally:
         php_client.usuario_actual.reset(token_usuario)
 
-    await sesiones.guardar_estado(session_id, estado)
-
     # Guardamos también la pregunta para que el historial no la pierda y el
     # modelo no repita lo mismo en el siguiente turno.
     texto_asistente = (respuesta.get("mensaje") or "").strip()
     pregunta = respuesta.get("pregunta_activa") or respuesta.get("pregunta_aclaratoria")
     if pregunta:
         texto_asistente = f"{texto_asistente}\n{pregunta}".strip()
-    await sesiones.agregar_mensaje(session_id, "model", texto_asistente)
 
+    tipo_respuesta = respuesta.get("tipo_respuesta")
+    origen_respuesta = "cuestionario" if estado.get("dominio") else "llm"
+    dominio = estado.get("dominio")
+    especialidad = respuesta.get("especialidad_sugerida")
+    respuestas = estado.get("respuestas", {})
+
+    motivo_texto = estado.get("motivo") or body.consulta
+    candidatos = cuestionario.detectar_candidatos(motivo_texto)
+    top1 = float(candidatos[0]["score"]) if candidatos else 0.0
+    top2 = float(candidatos[1]["score"]) if len(candidatos) > 1 else 0.0
+    min_preguntas = (
+        cuestionario.dominios().get(dominio) or {}
+    ).get("min_preguntas", 3)
+
+    componentes = motor_confianza.componentes(
+        top1=top1,
+        top2=top2,
+        n_candidatos=len(candidatos),
+        respondidas=len(respuestas),
+        min_preguntas=min_preguntas,
+        negaciones=motor_evidencia.contar_negaciones(motivo_texto),
+    )
+    confianza_total = motor_confianza.calcular(componentes)
+    margen_top = motor_confianza.margen(top1, top2)
+    revision, motivo_revision = motor_confianza.evaluar(
+        total=confianza_total,
+        margen_top=margen_top,
+        n_candidatos=len(candidatos),
+        tipo_respuesta=tipo_respuesta,
+    )
+
+    motivos = [m for m in (motivo_revision or "").split(",") if m]
+    if motor_confianza.es_muestra(turno["id"]):
+        motivos.append("muestra_dorada")
+    if degradado:
+        motivos.append("degradado")
+
+    # La revisión es opcional y posterior: no bloquea la respuesta.
+    if tipo_respuesta == "aclaracion":
+        revision = False
+        motivo_revision = None
+    elif motivos:
+        revision = True
+        motivo_revision = ",".join(dict.fromkeys(motivos))
+    else:
+        motivo_revision = None
+
+    resumen_ficha = {
+        "motivo": estado.get("motivo"),
+        "dominio": dominio,
+        "respuestas": respuestas,
+        "especialidad": especialidad,
+        "controles": (estado.get("contexto") or {}).get("controles", []),
+        "patologias": (estado.get("contexto") or {}).get("patologias", []),
+    }
     latencia = int((time.perf_counter() - t0) * 1000)
-    try:
-        await auditoria.registrar({
-            "session_id": session_id,
-            "usuario_id": usuario["id"],
-            "usuario_rol": usuario["rol"],
-            "usuario_nombre": usuario["nombre"],
-            "paciente_id": estado.get("paciente_id"),
-            "dominio": estado.get("dominio"),
-            "consulta": body.consulta,
-            "tipo_respuesta": respuesta.get("tipo_respuesta"),
-            "especialidad_sugerida": respuesta.get("especialidad_sugerida"),
-            "pruebas_sugeridas": respuesta.get("pruebas_sugeridas"),
-            "modelo_usado": getattr(proveedor, "nombre_modelo", settings.MODELO_GEMINI),
-            "latencia_ms": latencia,
-            "tools_usadas": "cuestionario" if estado.get("dominio") else "gemini",
-            "json_respuesta": respuesta,
-        })
-    except Exception:
-        logger.exception("No se pudo registrar la auditoría")
 
-    return {"session_id": session_id, **respuesta}
+    try:
+        async with unidad_de_trabajo() as db:
+            await sesiones.guardar_estado(session_id, estado, db=db)
+            mensaje_asistente_id = await sesiones.agregar_mensaje(
+                session_id, "model", texto_asistente,
+                consulta["id"], turno["id"], db=db,
+            )
+
+            salida = {
+                "session_id": session_id,
+                "consulta_id": consulta["id"],
+                "turno_id": turno["id"],
+                "peticion_id": peticion_id,
+                "mensaje_usuario_id": mensaje_usuario_id,
+                "mensaje_id": mensaje_asistente_id,
+                **respuesta,
+            }
+
+            evidencia_id = await evidencia.guardar_evidencia(
+                db,
+                turno_id=turno["id"],
+                consulta_id=consulta["id"],
+                resumen_ficha=resumen_ficha,
+                respuesta_final=texto_asistente,
+                componentes=componentes,
+                candidatos=candidatos,
+                revision_requerida=revision,
+                motivo_revision=motivo_revision,
+                confianza_total=confianza_total,
+                modelo=getattr(proveedor, "nombre_modelo", settings.MODELO_GEMINI),
+                catalogo_nombre=especialidad,
+            )
+
+            if revision:
+                await evidencia.crear_validacion(
+                    db,
+                    consulta_id=consulta["id"],
+                    evidencia_turno_id=evidencia_id,
+                    motivo=motivo_revision or "confianza_baja",
+                )
+
+            await sesiones.actualizar_turno(
+                turno["id"], tipo_respuesta, origen_respuesta, degradado,
+                respuesta_json=salida, db=db,
+            )
+
+            await sesiones.actualizar_consulta(
+                consulta["id"],
+                flujo="cuestionario" if dominio else "general",
+                dominio_id=conocimiento.id_dominio(dominio) if dominio else None,
+                id_paciente=estado.get("paciente_id"),
+                db=db,
+            )
+
+            # `aclaracion` mantiene la consulta abierta; el resto la cierra.
+            if tipo_respuesta and tipo_respuesta != "aclaracion":
+                await sesiones.cerrar_consulta(
+                    consulta["id"], tipo_respuesta, db=db
+                )
+
+            await auditoria.registrar(
+                {
+                    "session_id": session_id,
+                    "consulta_id": consulta["id"],
+                    "turno_id": turno["id"],
+                    "usuario_id": usuario["id"],
+                    "usuario_rol": usuario["rol"],
+                    "usuario_nombre": usuario["nombre"],
+                    "paciente_id": estado.get("paciente_id"),
+                    "dominio": dominio,
+                    "consulta": body.consulta,
+                    "tipo_respuesta": tipo_respuesta,
+                    "especialidad_sugerida": especialidad,
+                    "pruebas_sugeridas": respuesta.get("pruebas_sugeridas"),
+                    "modelo_usado": getattr(
+                        proveedor, "nombre_modelo", settings.MODELO_GEMINI
+                    ),
+                    "latencia_ms": latencia,
+                    "tools_usadas": "cuestionario" if dominio else "gemini",
+                    "json_respuesta": respuesta,
+                    "resultado": "degradado" if degradado else "ok",
+                },
+                db=db,
+                idempotency_key=f"turno:{turno['id']}",
+            )
+    except Exception:
+        logger.exception(
+            "Fallo al guardar el turno de forma durable "
+            "(session=%s turno=%s)", session_id, turno["id"],
+        )
+        raise HTTPException(
+            503,
+            "No se pudo guardar el turno; reintenta con el mismo peticion_id",
+        )
+
+    try:
+        await auditoria.relay_auditoria()
+    except Exception:
+        logger.exception("Relay de auditoría falló; se reintentará")
+
+    return salida
 
 
 @app.get("/sesiones/{session_id}")
@@ -543,6 +768,170 @@ async def ver_auditoria(
     return await auditoria.listar(limite)
 
 
+@app.get("/validaciones")
+async def listar_validaciones(
+    request: Request,
+    estado: str | None = None,
+    especialidad: str | None = None,
+    dominio: str | None = None,
+    confianza_min: float | None = None,
+    fecha: str | None = None,
+    cursor: str | None = None,
+    limite: int = 20,
+):
+    _usuario_validacion(request)
+    try:
+        return await validaciones.listar(
+            estado=estado,
+            especialidad=especialidad,
+            dominio=dominio,
+            confianza_min=confianza_min,
+            fecha=fecha,
+            cursor=cursor,
+            limite=limite,
+        )
+    except validaciones.MotivoRequerido as exc:
+        raise HTTPException(422, str(exc))
+
+
+@app.get("/validaciones/{validacion_id}")
+async def detalle_validacion(validacion_id: int, request: Request):
+    _usuario_validacion(request)
+    datos = await validaciones.detalle(validacion_id)
+    if not datos:
+        raise HTTPException(404, "Validación no encontrada")
+    return datos
+
+
+@app.post("/validaciones/{validacion_id}/tomar")
+async def tomar_validacion(validacion_id: int, request: Request):
+    actor, _ = _usuario_validacion(request)
+    try:
+        return await validaciones.tomar(validacion_id, actor)
+    except validaciones.ValidacionNoEncontrada:
+        raise HTTPException(404, "Validación no encontrada")
+    except validaciones.ConflictoValidacion as exc:
+        raise HTTPException(409, {"error": "conflicto", **exc.detalle})
+
+
+@app.post("/validaciones/{validacion_id}/decidir")
+async def decidir_validacion(
+    validacion_id: int, body: DecisionIn, request: Request
+):
+    actor, _ = _usuario_validacion(request)
+    try:
+        return await validaciones.decidir(
+            validacion_id,
+            actor,
+            body.decision,
+            body.motivo_codigo,
+            body.comentario,
+            body.version,
+        )
+    except validaciones.ValidacionNoEncontrada:
+        raise HTTPException(404, "Validación no encontrada")
+    except validaciones.MotivoRequerido as exc:
+        raise HTTPException(422, str(exc))
+    except validaciones.ConflictoValidacion as exc:
+        raise HTTPException(409, {"error": "conflicto", **exc.detalle})
+
+
+@app.post("/validaciones/{validacion_id}/visto")
+async def visto_validacion(validacion_id: int, request: Request):
+    actor, rol = _usuario_validacion(request)
+    try:
+        return await validaciones.visto(validacion_id, actor, rol)
+    except validaciones.ValidacionNoEncontrada:
+        raise HTTPException(404, "Validación no encontrada")
+
+
+@app.get("/propuestas")
+async def listar_propuestas(
+    request: Request,
+    estado: str | None = None,
+    dominio: str | None = None,
+    limite: int = 50,
+):
+    _usuario_validacion(request)
+    return await propuestas.listar(
+        estado=estado, dominio=dominio, limite=limite
+    )
+
+
+@app.post("/propuestas")
+async def crear_propuesta(body: PropuestaIn, request: Request):
+    actor, _ = _usuario_validacion(request)
+    try:
+        propuesta_id = await propuestas.crear(
+            dominio_clave=body.dominio,
+            tipo=body.tipo,
+            valor=body.valor,
+            clave=body.clave,
+            capa_error=body.capa_error,
+            generado_por=actor,
+        )
+    except propuestas.ConflictoPropuesta as exc:
+        raise HTTPException(422, str(exc))
+    return {"ok": propuesta_id is not None, "propuesta_id": propuesta_id}
+
+
+@app.post("/propuestas/{propuesta_id}/aprobar")
+async def aprobar_propuesta(propuesta_id: int, request: Request):
+    actor, _ = _usuario_validacion(request)
+    try:
+        return await propuestas.aprobar(propuesta_id, actor)
+    except propuestas.PropuestaNoEncontrada:
+        raise HTTPException(404, "Propuesta no encontrada")
+    except propuestas.Autoaprobacion as exc:
+        raise HTTPException(409, str(exc))
+    except propuestas.ConflictoPropuesta as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/propuestas/{propuesta_id}/rechazar")
+async def rechazar_propuesta(
+    propuesta_id: int, body: RechazoIn, request: Request
+):
+    actor, _ = _usuario_validacion(request)
+    try:
+        return await propuestas.rechazar(propuesta_id, actor, body.motivo)
+    except propuestas.PropuestaNoEncontrada:
+        raise HTTPException(404, "Propuesta no encontrada")
+    except propuestas.ConflictoPropuesta as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/salud")
+async def salud():
+    con = await conectar_db()
+    try:
+        async with con.execute("PRAGMA foreign_key_check") as cur:
+            fk = [dict(f) for f in await cur.fetchall()]
+        async with con.execute(
+            "SELECT id, hash FROM kb_version WHERE activa = 1 LIMIT 1"
+        ) as cur:
+            version = await cur.fetchone()
+        async with con.execute(
+            "SELECT COUNT(*) FROM validacion WHERE estado = 'pendiente'"
+        ) as cur:
+            pendientes = (await cur.fetchone())[0]
+        async with con.execute(
+            "SELECT COUNT(*) FROM propuesta_conocimiento "
+            "WHERE estado = 'pendiente'"
+        ) as cur:
+            propuestas_pendientes = (await cur.fetchone())[0]
+    finally:
+        await con.close()
+
+    return {
+        "ok": not fk,
+        "foreign_key_check": fk,
+        "kb_version": dict(version) if version else None,
+        "validaciones_pendientes": pendientes,
+        "propuestas_pendientes": propuestas_pendientes,
+    }
+
+
 @app.get("/conocimiento")
 async def ver_conocimiento(x_api_key: str | None = Header(default=None)):
     """Devuelve lo que MIDI ha aprendido (ejemplos/palabras por dominio)."""
@@ -553,24 +942,45 @@ async def ver_conocimiento(x_api_key: str | None = Header(default=None)):
 @app.post("/conocimiento")
 async def aprender_conocimiento(
     body: ConocimientoIn,
+    request: Request,
     x_api_key: str | None = Header(default=None),
 ):
-    """Permite añadir conocimiento a un dominio sin tocar código."""
+    """Registra conocimiento nuevo como propuestas revisables."""
     verificar_api_key(x_api_key)
 
     if body.dominio not in cuestionario.dominios():
         raise HTTPException(status_code=404, detail="Dominio no encontrado")
 
-    ok = False
+    actor = (request.headers.get("X-Usuario-Id") or "").strip() or None
+    creadas: list[int] = []
+
     if body.ejemplo:
-        ok = cuestionario.aprender_ejemplo(body.dominio, body.ejemplo) or ok
-    if body.palabras_clave:
-        ok = cuestionario.aprender_palabras(body.dominio, body.palabras_clave) or ok
+        propuesta_id = await propuestas.crear(
+            dominio_clave=body.dominio,
+            tipo="ejemplo",
+            valor=body.ejemplo,
+            capa_error=body.capa_error,
+            generado_por=actor,
+        )
+        if propuesta_id:
+            creadas.append(propuesta_id)
+
+    for palabra in body.palabras_clave or []:
+        propuesta_id = await propuestas.crear(
+            dominio_clave=body.dominio,
+            tipo="palabra",
+            valor=palabra,
+            capa_error=body.capa_error,
+            generado_por=actor,
+        )
+        if propuesta_id:
+            creadas.append(propuesta_id)
 
     return {
-        "ok": ok,
+        "ok": True,
         "dominio": body.dominio,
-        "aprendido": cuestionario.listar_aprendido().get(body.dominio, {}),
+        "pendiente": len(creadas),
+        "propuestas": creadas,
     }
 
 

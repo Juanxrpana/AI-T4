@@ -12,6 +12,8 @@ import tempfile
 import pytest
 
 os.environ["GEMINI_API_KEY"] = "test-gemini-key"
+os.environ["PROVEEDOR_IA"] = "gemini"
+os.environ["PROVEEDORES_FALLBACK"] = ""
 os.environ["API_KEY_COMPARTIDA"] = "test-api-key"
 os.environ["MODELO_GEMINI"] = "gemini-test"
 os.environ["PHP_BASE_URL"] = "http://localhost/Sistema-del--CEM--JEHOVA-RAFA"
@@ -37,3 +39,13 @@ def _sin_embeddings_reales(monkeypatch):
         return None
 
     monkeypatch.setattr(ai.embeddings, "embed", _fake)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _base_inicializada():
+    """Crea y siembra la base temporal antes de cualquier test."""
+    import asyncio
+
+    from storage import db
+
+    asyncio.run(db.init_db())
