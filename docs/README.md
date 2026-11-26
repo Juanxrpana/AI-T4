@@ -7,7 +7,7 @@ date: "2026-11-20"
 
 # Paquete de diagramación — MIDI
 
-Este paquete reúne los tres entregables gráficos solicitados para la presentación formal del componente inteligente **MIDI** (Módulo Inteligente de Derivación e Información) del **Centro de Especialidades Médicas Jehová Rafa**.
+Este paquete reúne los cuatro entregables gráficos solicitados para la presentación formal del componente inteligente **MIDI** (Módulo Inteligente de Derivación e Información) del **Centro de Especialidades Médicas Jehová Rafa**.
 
 Cada documento es autónomo: contiene el diagrama, su explicación, las tablas de apoyo y un guion breve para exponerlo.
 
@@ -18,6 +18,7 @@ Cada documento es autónomo: contiene el diagrama, su explicación, las tablas d
 | 1 | [`01-diagrama-general-caso-sistema.md`](./01-diagrama-general-caso-sistema.md) | Diagrama general de casos de uso del sistema | Mostrar **quién usa el sistema**, **qué hace** y **dónde aparece MIDI** dentro del CEM Jehová Rafa. |
 | 2 | [`02-arquitectura-componente-inteligente.md`](./02-arquitectura-componente-inteligente.md) | Arquitectura del componente inteligente | Evidenciar las **capas, componentes, flujos y mecanismos de inteligencia** de MIDI. |
 | 3 | [`03-base-de-conocimiento-relacional.md`](./03-base-de-conocimiento-relacional.md) | Modelo relacional de la base de conocimiento | Presentar **las tablas que conforman la base de conocimiento**, sus relaciones, llaves y reglas de integridad. |
+| 4 | [`04-caso-uso-componente.md`](./04-caso-uso-componente.md) | Caso de uso solo del componente | Aislar la frontera de MIDI: qué hace por sí mismo y qué actores o sistemas externos lo alimentan. |
 
 ## 2. Orden sugerido de exposición
 
@@ -26,21 +27,23 @@ Cada documento es autónomo: contiene el diagrama, su explicación, las tablas d
 | Apertura | Contexto: sistema CEM + MIDI | Doc. 1, sección 1 | 1 min |
 | 1 | Casos de uso generales | Doc. 1, diagrama | 3 min |
 | 2 | Caso de uso central «Orientar consulta» | Doc. 1, sección 5 | 2 min |
-| 3 | Arquitectura por capas | Doc. 2, vista 1 | 3 min |
-| 4 | Núcleo inteligente | Doc. 2, vista 2 | 3 min |
-| 5 | Flujo de una consulta | Doc. 2, secuencia | 2 min |
-| 6 | Base de conocimiento curada | Doc. 3, diagrama A | 3 min |
-| 7 | Base de conocimiento operativa | Doc. 3, diagrama B | 2 min |
-| 8 | Integridad y ciclo de vida | Doc. 3, secciones 6–8 | 2 min |
+| 3 | Caso de uso solo del componente | Doc. 4, diagrama | 2 min |
+| 4 | Arquitectura por capas | Doc. 2, vista 1 | 3 min |
+| 5 | Núcleo inteligente | Doc. 2, vista 2 | 3 min |
+| 6 | Flujo de una consulta | Doc. 2, secuencia | 2 min |
+| 7 | Base de conocimiento curada | Doc. 3, diagrama A | 3 min |
+| 8 | Base de conocimiento operativa | Doc. 3, diagrama B | 2 min |
+| 9 | Integridad y ciclo de vida | Doc. 3, secciones 6–8 | 2 min |
 | Cierre | Alcance, límites y conclusiones | Doc. 1, sección 8; Doc. 2, sección 7 | 1 min |
 
-**Duración total sugerida:** 20–22 minutos, con 5 minutos adicionales para preguntas.
+**Duración total sugerida:** 24–26 minutos, con 5 minutos adicionales para preguntas.
 
 ## 3. Convenciones de nomenclatura
 
 | Prefijo | Significado | Ejemplo |
 |---|---|---|
-| `CU-xx` | Caso de uso | `CU-05` Aplicar cuestionario guiado |
+| `CU-xx` | Caso de uso del sistema | `CU-05` Aplicar cuestionario guiado |
+| `CUC-xx` | Caso de uso del componente MIDI | `CUC-04` Aplicar cuestionario guiado |
 | `C-xx` | Componente de arquitectura | `C-05` Base de conocimiento curada |
 | `TAB-xx` | Tabla o entidad del modelo de datos | `TAB-01` `dominio` |
 | `RF-xx` | Requisito funcional referenciado | `RF-05` Orientación clínica |

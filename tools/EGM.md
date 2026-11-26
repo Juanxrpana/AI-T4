@@ -12,13 +12,13 @@ El catálogo de especialidades se cachea 10 minutos. Las herramientas exponen do
 
 - `usuario_actual`: `ContextVar` con el `id_usuario` de la petición actual.
 - `_headers()`: devuelve `X-API-Key` y, si hay contexto, `X-Usuario-Id`.
-- `_get_json(endpoint)`: GET a `PHP_BASE_URL + endpoint` con timeout de 10 s; devuelve JSON o `None`.
-- `_get(endpoint)`: igual que `_get_json`, pero garantiza una lista.
+- `_get_json(endpoint)`: GET a `PHP_BASE_URL + endpoint` con timeout de 10 s; devuelve JSON o `None` si hay error HTTP.
+- `_get(endpoint)`: igual que `_get_json`, pero garantiza una lista; acepta una lista directa o un objeto con clave `data`.
 - `get_catalogo_especialidades(forzar_refresh=False)`: consulta `/Api/apiEspecialidades`, filtra filas con `id_categoria` y `nombre`, y cachea 600 s.
 - `get_catalogo_cache_sincrono()`: lee el caché sin llamar a PHP.
 - `get_doctores_por_id_categoria(id_categoria)`: `/Api/apiDoctoresPorEspecialidad/{id}`.
-- `get_mis_datos(id_usuario)`: `/Api/apiDatosUsuario/{id_usuario}`.
-- `buscar_paciente(q)`: `/Api/apiBuscarPaciente?q=...`.
+- `get_mis_datos(id_usuario)`: `/Api/apiDatosUsuario/{id_usuario}`; si la respuesta no es un objeto, devuelve `{"ok": False, "error": ...}`.
+- `buscar_paciente(q)`: `/Api/apiBuscarPaciente?q=...` con `quote`.
 - `get_controles_paciente(id_paciente)`: `/Api/apiControlesPaciente/{id}`.
 - `get_patologias_paciente(id_paciente)`: `/Api/apiPatologiasPaciente/{id}`.
 
@@ -35,7 +35,9 @@ El catálogo de especialidades se cachea 10 minutos. Las herramientas exponen do
 - **Solo lectura.** Todas las llamadas a PHP son `GET`; no hay `POST`, `PUT` ni `DELETE` en `php_client`.
 - **Autenticación.** Toda llamada envía `X-API-Key` con `settings.API_KEY_COMPARTIDA`. La clave debe coincidir con `API_KEY_IA` en el `.env` de CEMJR.
 - **Identidad.** `X-Usuario-Id` solo se envía si `usuario_actual` tiene valor. `main.py` lo establece antes de procesar la consulta; los endpoints de pacientes de `ControllerApi` lo exigen.
-- **Catálogo.** El catálogo se cachea 600 s; si PHP falla, se conserva el último valor. `get_catalogo_cache_sincrono` no hace red y puede devolver una lista vacía al arranque.
+- **Catálogo.** El catálogo se cachea 600 s. Si PHP falla, `_get` devuelve `[]` y el caché queda vacío con marca de tiempo nueva; las llamadas siguientes vuelven a intentar porque `not _catalogo_cache` fuerza el refresco. No se conserva el último catálogo bueno. `get_catalogo_cache_sincrono` no hace red y puede devolver una lista vacía al arranque.
+- **Ventana de controles.** `get_controles_paciente` solo hace el GET; la ventana de 6 meses la decide `apiControlesPaciente` en PHP.
+- **Búsqueda mínima.** `tools/clinica.py:buscar_paciente` exige al menos 2 caracteres antes de llamar a PHP; `php_client.buscar_paciente` no valida longitud.
 - **Endpoints existentes.** Las rutas usadas son las de `ControllerApi`: especialidades, doctores por especialidad, datos de usuario, búsqueda de pacientes, controles y patologías. No hay endpoint de creación de pacientes ni de disponibilidad de citas.
 - **Sin CSRF.** Al ser servicio a servicio no hay cookie de sesión ni CSRF; la autorización depende de la API key y del `X-Usuario-Id`.
 - **Sin escritura.** Las herramientas no crean ni modifican pacientes, citas, facturas ni historia clínica.
